@@ -5,7 +5,16 @@ import {
   type CDPSession,
   type Page,
 } from "playwright-core";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vite-plus/test";
 
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
@@ -30,11 +39,12 @@ describe("server browser element refs", () => {
     await context.close();
   });
 
-  const takeSnapshot = () =>
+  const takeSnapshot = (image = true) =>
     ServerBrowserPage.snapshot({
       page,
       cdp,
       renderScale: 1,
+      image,
       consoleEntries: [],
       networkEntries: [],
       actionTimeline: [],
@@ -70,6 +80,18 @@ describe("server browser element refs", () => {
       "row 3delete",
       "row 4delete",
     ]);
+  });
+
+  it("takes no screenshot unless asked", async () => {
+    await page.setContent("<button>go</button>");
+    const send = vi.spyOn(cdp, "send");
+    const text = await takeSnapshot(false);
+    expect(text.screenshot).toBeUndefined();
+    expect(String(text.accessibilityTree)).toContain('button "go"');
+    expect(send).not.toHaveBeenCalledWith("Page.captureScreenshot", expect.anything());
+    const image = await takeSnapshot(true);
+    expect(image.screenshot).toMatchObject({ mimeType: "image/png" });
+    expect(send).toHaveBeenCalledWith("Page.captureScreenshot", expect.anything());
   });
 
   it("returns from a click once it opens a dialog", async () => {
