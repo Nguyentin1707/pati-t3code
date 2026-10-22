@@ -71,7 +71,9 @@ export const toOperationError = (cause: unknown): ServerBrowserOperationError =>
     return new ServerBrowserOperationError(
       "PreviewAutomationControlInterruptedError",
       cause.message,
-      cause.reason,
+      cause.ownedTabIds === undefined
+        ? cause.reason
+        : { reason: cause.reason, ownedTabIds: cause.ownedTabIds },
     );
   if (cause instanceof ServerBrowserOperationError) return cause;
   const message = cause instanceof Error ? cause.message : String(cause);

@@ -304,6 +304,10 @@ interface ServerTab {
   readonly openerTabId: string | undefined;
 
   readonly downloads: Array<ServerDownload>;
+  /** Popups still being turned into tabs, so an action can wait for the ones it caused. */
+  readonly adoptions: Set<Promise<void>>;
+  /** Set only while a click or key press runs; adoptPopup reports the tabs it opens here. */
+  openedTabs: Array<{ readonly tabId: string; readonly url: string }> | null;
   fileChooser: {
     readonly id: string;
     readonly chooser: FileChooser;
@@ -790,6 +794,8 @@ const make = Effect.gen(function* () {
       abortedNavigation: null,
       captureLock: Promise.resolve(),
       capturing: 0,
+      adoptions: new Set(),
+      openedTabs: null,
     };
     if (!desktop) {
       await page.setViewportSize(fixedViewportSize(tab.setting) ?? UNATTACHED_FILL_VIEWPORT);
@@ -885,7 +891,10 @@ const make = Effect.gen(function* () {
     page.on("download", (download) => void saveDownload(tab, download));
     updateFileChooserInterception(tab);
     // Popups become tabs and keep `window.opener`, so sign-in popups can report back.
-    page.on("popup", (popup) => void adoptPopup(tab, popup));
+    page.on("popup", (popup) => {
+      const adoption = adoptPopup(tab, popup).finally(() => tab.adoptions.delete(adoption));
+      tab.adoptions.add(adoption);
+    });
     // Playwright cannot reload a crashed page, so it must leave the tab list.
     const key = tabKey(tab.threadId, tab.tabId);
     if (closedPendingTabs.delete(key)) {
@@ -1225,6 +1234,7 @@ const make = Effect.gen(function* () {
       }),
     ).then(
       (snapshot) => {
+        opener.openedTabs?.push({ tabId: snapshot.tabId, url: popup.url() });
         if (opener.control.agentId === null)
           controller?.push({ _tag: "popup", tabId: snapshot.tabId });
       },
@@ -1683,16 +1693,35 @@ const make = Effect.gen(function* () {
     );
   };
 
+  const withOpenedTabs = async (tab: ServerTab, run: () => Promise<unknown>) => {
+    const openedTabs: NonNullable<ServerTab["openedTabs"]> = [];
+    tab.openedTabs = openedTabs;
+    try {
+      await run();
+      await Promise.allSettled([...tab.adoptions]);
+    } finally {
+      tab.openedTabs = null;
+    }
+    return openedTabs.length === 0 ? undefined : { openedTabs };
+  };
+
+  const ownedTabIds = (request: PreviewAutomationRequest) =>
+    [...tabs.values()]
+      .filter(
+        (tab) =>
+          tab.threadId === request.threadId && tab.control.agentId === request.agentSessionId,
+      )
+      .map((tab) => tab.tabId);
+
   const requireTab = async (request: PreviewAutomationRequest) => {
     if (!request.agentSessionId)
       throw new BrowserControlInterrupted("The agent session is missing. Reconnect the provider.");
-    const owned = [...tabs.values()].filter(
-      (tab) => tab.threadId === request.threadId && tab.control.agentId === request.agentSessionId,
-    );
+    const owned = ownedTabIds(request);
     if (!request.tabIdExplicit && owned.length > 1)
       throw new BrowserControlInterrupted(
         "Multiple tabs belong to this agent session. Pass a tabId from preview_open or preview_status tabs.",
         "tabRequired",
+        owned,
       );
     const tab =
       request.tabId === undefined
@@ -1746,17 +1775,12 @@ const make = Effect.gen(function* () {
         const open = input as PreviewAutomationOpenInput;
         const url = open.url === undefined ? undefined : normalizePreviewUrl(open.url);
         const reuse = open.reuseExistingTab ?? true;
-        if (
-          reuse &&
-          !request.tabIdExplicit &&
-          [...tabs.values()].filter(
-            (tab) =>
-              tab.threadId === request.threadId && tab.control.agentId === request.agentSessionId,
-          ).length > 1
-        )
+        const owned = ownedTabIds(request);
+        if (reuse && !request.tabIdExplicit && owned.length > 1)
           throw new BrowserControlInterrupted(
             "Multiple tabs are open. Pass tabId or reuseExistingTab=false.",
             "tabRequired",
+            owned,
           );
 
         const found =
@@ -1848,17 +1872,12 @@ const make = Effect.gen(function* () {
         );
       }
       case "recordingStop": {
-        if (
-          !request.tabIdExplicit &&
-          [...tabs.values()].filter(
-            (candidate) =>
-              candidate.threadId === request.threadId &&
-              candidate.control.agentId === request.agentSessionId,
-          ).length > 1
-        )
+        const owned = ownedTabIds(request);
+        if (!request.tabIdExplicit && owned.length > 1)
           throw new BrowserControlInterrupted(
             "Multiple tabs belong to this agent session. Pass a tabId from preview_open or preview_status tabs.",
             "tabRequired",
+            owned,
           );
         const recordings = [...tabs.values()].filter(
           (candidate) =>
@@ -2017,10 +2036,11 @@ const make = Effect.gen(function* () {
       }
       case "click": {
         const clickInput = input as PreviewAutomationClickInput;
-        await recordAction(tab, "click", () =>
-          ServerBrowserPage.click(tab.page, clickInput, pointerFor(tab), deadlineMs),
+        return withOpenedTabs(tab, () =>
+          recordAction(tab, "click", () =>
+            ServerBrowserPage.click(tab.page, clickInput, pointerFor(tab), deadlineMs),
+          ),
         );
-        return undefined;
       }
       case "hover":
         return recordAction(tab, "hover", () =>
@@ -2053,8 +2073,10 @@ const make = Effect.gen(function* () {
           ServerBrowserPage.type(tab.page, input as PreviewAutomationTypeInput, deadlineMs),
         );
       case "press":
-        return recordAction(tab, "press", () =>
-          ServerBrowserPage.press(tab.page, input as PreviewAutomationPressInput),
+        return withOpenedTabs(tab, () =>
+          recordAction(tab, "press", () =>
+            ServerBrowserPage.press(tab.page, input as PreviewAutomationPressInput),
+          ),
         );
       case "scroll":
         return recordAction(tab, "scroll", () =>
