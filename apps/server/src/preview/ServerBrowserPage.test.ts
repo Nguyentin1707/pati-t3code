@@ -107,6 +107,51 @@ describe("server browser element refs", () => {
     expect(await page.locator("li").count()).toBe(5);
   });
 
+  it("reports how many elements an ambiguous locator matched", async () => {
+    await page.setContent(repeatedRows);
+    const failure = await ServerBrowserPage.click(page, {
+      selector: 'button[data-testid="delete-row"]',
+      timeoutMs: 1_000,
+    }).catch(ServerBrowserPage.toOperationError);
+    expect(failure).toMatchObject({
+      tag: "PreviewAutomationInvalidSelectorError",
+      detail: { hint: "ambiguous", matchCount: 5 },
+    });
+  });
+
+  it.each([
+    {
+      hint: "covered",
+      html: '<button id="go">Go</button><div style="position:fixed;inset:0;background:#fff"></div>',
+    },
+    { hint: "notEnabled", html: '<button id="go" disabled>Go</button>' },
+    { hint: "notVisible", html: '<button id="go" style="display:none">Go</button>' },
+  ])("hints $hint when a click cannot reach its target", async ({ hint, html }) => {
+    await page.setContent(html);
+    const failure = await ServerBrowserPage.click(page, {
+      selector: "#go",
+      timeoutMs: 300,
+    }).catch(ServerBrowserPage.toOperationError);
+    expect(failure).toMatchObject({
+      tag: "PreviewAutomationTimeoutError",
+      detail: { hint },
+    });
+  });
+
+  it("names the conditions a wait left unmet", async () => {
+    await page.setContent("<p>hello</p>");
+    const failure = await ServerBrowserPage.waitFor(page, {
+      text: "hello",
+      urlIncludes: "never-matches",
+      selector: "#missing",
+      timeoutMs: 150,
+    }).catch(ServerBrowserPage.toOperationError);
+    expect(failure).toMatchObject({
+      tag: "PreviewAutomationTimeoutError",
+      detail: { unmet: ["locator", "url"] },
+    });
+  });
+
   it("does not retarget a removed ref to a replacement node", async () => {
     await page.setContent("<button onclick=\"this.textContent='clicked'\">original</button>");
     const locator = buttonLocator((await takeSnapshot()).accessibilityTree, "original");

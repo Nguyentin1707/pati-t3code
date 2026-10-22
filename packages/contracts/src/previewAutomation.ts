@@ -941,16 +941,58 @@ export class PreviewAutomationTabNotFoundError extends Schema.TaggedError<Previe
   }
 }
 
+/** Why an action could not reach its target, read from Playwright's actionability log. */
+export const PreviewAutomationFailureHint = Schema.Literals([
+  "covered",
+  "notVisible",
+  "notEnabled",
+  "notEditable",
+  "notStable",
+  "detached",
+  "ambiguous",
+]);
+export type PreviewAutomationFailureHint = typeof PreviewAutomationFailureHint.Type;
+
+export const PreviewAutomationUnmetCondition = Schema.Literals(["locator", "text", "url"]);
+export type PreviewAutomationUnmetCondition = typeof PreviewAutomationUnmetCondition.Type;
+
+const HINT_ADVICE: Readonly<Record<PreviewAutomationFailureHint, string>> = {
+  covered: "Another element covers the target; close the overlay or press Escape, then retry.",
+  notVisible:
+    "The target is not visible; open its container or scroll it into view, or wait for it with preview_wait_for.",
+  notEnabled:
+    "The control is disabled; wait for it with preview_wait_for or fill required fields first.",
+  notEditable:
+    "The target cannot be edited; use the input or textarea itself from preview_snapshot.",
+  notStable: "The target keeps moving; wait for the page to settle, then retry.",
+  detached: "The target was removed from the page; take a fresh preview_snapshot and retry.",
+  ambiguous: "The locator matches several elements; use an aria-ref from preview_snapshot.",
+};
+
+const PreviewAutomationFailureHintFields = {
+  hint: Schema.optional(PreviewAutomationFailureHint),
+  matchCount: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+};
+
+const withHintAdvice = (summary: string, hint: PreviewAutomationFailureHint | undefined) =>
+  hint === undefined ? summary : `${summary} ${HINT_ADVICE[hint]}`;
+
 export class PreviewAutomationTimeoutError extends Schema.TaggedError<PreviewAutomationTimeoutError>()(
   "PreviewAutomationTimeoutError",
   {
     ...PreviewAutomationRequestErrorFields,
     ...PreviewAutomationOptionalRemoteDiagnosticFields,
+    ...PreviewAutomationFailureHintFields,
+    unmet: Schema.optional(Schema.Array(PreviewAutomationUnmetCondition)),
   },
 ) {
   override get message(): string {
     const summary = `Preview automation ${this.operation} timed out after ${this.timeoutMs}ms.`;
-    return summary;
+    const unmet =
+      this.unmet === undefined || this.unmet.length === 0
+        ? summary
+        : `${summary} Not met: ${this.unmet.join(", ")}.`;
+    return withHintAdvice(unmet, this.hint);
   }
 }
 
@@ -997,12 +1039,16 @@ export class PreviewAutomationExecutionError extends Schema.TaggedError<PreviewA
     ...PreviewAutomationRequestErrorFields,
     ...PreviewAutomationRemoteDiagnosticFields,
     reason: Schema.optional(Schema.String),
+    ...PreviewAutomationFailureHintFields,
   },
 ) {
   override get message(): string {
-    return this.reason === undefined
-      ? `Preview automation ${this.operation} failed on client ${this.clientId}.`
-      : `Preview automation ${this.operation} failed: ${this.reason}`;
+    return withHintAdvice(
+      this.reason === undefined
+        ? `Preview automation ${this.operation} failed on client ${this.clientId}.`
+        : `Preview automation ${this.operation} failed: ${this.reason}`,
+      this.hint,
+    );
   }
 }
 
@@ -1014,9 +1060,15 @@ export class PreviewAutomationInvalidSelectorError extends Schema.TaggedError<Pr
     selectorKind: Schema.optional(Schema.Literals(["locator", "selector"])),
     selectorLength: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
     staleRef: Schema.optional(Schema.Boolean),
+    ...PreviewAutomationFailureHintFields,
   },
 ) {
   override get message(): string {
+    if (this.hint === "ambiguous") {
+      return this.matchCount === undefined
+        ? "Locator matched several elements; use an aria-ref from preview_snapshot."
+        : `Locator matched ${this.matchCount} elements; use an aria-ref from preview_snapshot.`;
+    }
     if (this.staleRef)
       return "This element ref is stale. Navigation, dialogs, and new snapshots replace refs; take a fresh snapshot and use its refs.";
     if (this.selectorKind !== undefined && this.selectorLength !== undefined) {

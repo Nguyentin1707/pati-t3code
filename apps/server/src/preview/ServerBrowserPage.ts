@@ -6,6 +6,7 @@ import {
   type PreviewAutomationConsoleEntry,
   type PreviewAutomationDragInput,
   type PreviewAutomationEvaluateInput,
+  type PreviewAutomationFailureHint,
   type PreviewAutomationHoverInput,
   type PreviewAutomationNetworkEntry,
   type PreviewAutomationPressInput,
@@ -14,6 +15,7 @@ import {
   type PreviewAutomationSelectResult,
   type PreviewAutomationSnapshot,
   type PreviewAutomationTypeInput,
+  type PreviewAutomationUnmetCondition,
   type PreviewAutomationUploadInput,
   type PreviewAutomationWaitForInput,
 } from "@t3tools/contracts";
@@ -39,6 +41,31 @@ export class ServerBrowserOperationError extends Error {
   }
 }
 
+/**
+ * Playwright's actionability wording, pinned in one table so a Playwright bump that rewords
+ * its call log fails the hint tests instead of silently dropping the recovery advice.
+ */
+const FAILURE_HINT_PATTERNS: ReadonlyArray<readonly [PreviewAutomationFailureHint, RegExp]> = [
+  ["covered", /intercepts pointer events/gi],
+  ["notVisible", /element is not visible/gi],
+  ["notEnabled", /element is not enabled/gi],
+  ["notEditable", /element is not editable/gi],
+  ["notStable", /element is not stable/gi],
+  ["detached", /element is not attached to the dom/gi],
+  ["ambiguous", /strict mode violation/gi],
+];
+
+/** Playwright retries and logs each blocker in turn, so the last one logged is what held the action up. */
+const readFailureHint = (message: string): PreviewAutomationFailureHint | undefined => {
+  let found: { hint: PreviewAutomationFailureHint; at: number } | undefined;
+  for (const [hint, pattern] of FAILURE_HINT_PATTERNS) {
+    for (const match of message.matchAll(pattern)) {
+      if (found === undefined || match.index > found.at) found = { hint, at: match.index };
+    }
+  }
+  return found?.hint;
+};
+
 export const toOperationError = (cause: unknown): ServerBrowserOperationError => {
   if (cause instanceof BrowserControlInterrupted)
     return new ServerBrowserOperationError(
@@ -49,18 +76,33 @@ export const toOperationError = (cause: unknown): ServerBrowserOperationError =>
   if (cause instanceof ServerBrowserOperationError) return cause;
   const message = cause instanceof Error ? cause.message : String(cause);
   const firstLine = message.split("\n")[0] ?? message;
+  // Only the closed hint and a count leave the host: page text in the log never reaches the agent.
+  const hint = readFailureHint(message);
   if (cause instanceof Error && cause.name === "TimeoutError") {
-    return new ServerBrowserOperationError("PreviewAutomationTimeoutError", firstLine);
+    return new ServerBrowserOperationError(
+      "PreviewAutomationTimeoutError",
+      firstLine,
+      hint === undefined ? undefined : { hint },
+    );
   }
-  if (
-    /while parsing selector|Unknown engine|Unexpected token|strict mode violation/i.test(message)
-  ) {
+  if (hint === "ambiguous") {
+    const matchCount = Number(/resolved to (\d+) elements/i.exec(message)?.[1]);
+    return new ServerBrowserOperationError("PreviewAutomationInvalidSelectorError", firstLine, {
+      hint,
+      ...(matchCount >= 1 ? { matchCount } : {}),
+    });
+  }
+  if (/while parsing selector|Unknown engine|Unexpected token/i.test(message)) {
     return new ServerBrowserOperationError("PreviewAutomationInvalidSelectorError", firstLine);
   }
   if (/not an <input>|not editable|not an editable/i.test(message)) {
     return new ServerBrowserOperationError("PreviewAutomationTargetNotEditableError", firstLine);
   }
-  return new ServerBrowserOperationError("PreviewAutomationExecutionError", firstLine);
+  return new ServerBrowserOperationError(
+    "PreviewAutomationExecutionError",
+    firstLine,
+    hint === undefined ? undefined : { hint },
+  );
 };
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -922,25 +964,28 @@ export const waitFor = async (page: Page, input: PreviewAutomationWaitForInput) 
   const deadline = Date.now() + timeoutMs;
   const locator = targetLocator(page, input);
   const { text, urlIncludes } = input;
-  const checks: Array<() => Promise<boolean>> = [];
-  if (locator !== null) checks.push(async () => (await locator.count()) > 0);
+  const checks: Array<readonly [PreviewAutomationUnmetCondition, () => Promise<boolean>]> = [];
+  if (locator !== null) checks.push(["locator", async () => (await locator.count()) > 0]);
   if (text !== undefined) {
     // A navigation can destroy the context mid-check; that counts as not yet.
-    checks.push(() =>
-      page
-        .evaluate(`(document.body?.innerText ?? "").includes(${JSON.stringify(text)})`)
-        .then((found) => found === true)
-        .catch(() => false),
-    );
+    checks.push([
+      "text",
+      () =>
+        page
+          .evaluate(`(document.body?.innerText ?? "").includes(${JSON.stringify(text)})`)
+          .then((found) => found === true)
+          .catch(() => false),
+    ]);
   }
-  if (urlIncludes !== undefined) checks.push(async () => page.url().includes(urlIncludes));
+  if (urlIncludes !== undefined) checks.push(["url", async () => page.url().includes(urlIncludes)]);
   for (;;) {
-    const results = await Promise.all(checks.map((check) => check()));
+    const results = await Promise.all(checks.map(([, check]) => check()));
     if (results.every(Boolean)) return;
     if (Date.now() >= deadline) {
       throw new ServerBrowserOperationError(
         "PreviewAutomationTimeoutError",
         `Waited ${timeoutMs}ms without every condition holding.`,
+        { unmet: checks.flatMap(([kind], index) => (results[index] ? [] : [kind])) },
       );
     }
     await new Promise((resolve) => setTimeout(resolve, WAIT_POLL_MS));
