@@ -83,10 +83,19 @@ export const invalidateRefs = (page: Page) => {
 const refsFor = (page: Page) => {
   let state = pageRefs.get(page);
   if (!state) {
-    state = { generation: nextRefGeneration(), refs: new Map<string, string>() };
-    pageRefs.set(page, state);
-    page.on("framenavigated", () => invalidateRefs(page));
-    page.on("framedetached", () => invalidateRefs(page));
+    const created = { generation: nextRefGeneration(), refs: new Map<string, string>() };
+    state = created;
+    pageRefs.set(page, created);
+    // An ad or HMR iframe reloading must not revoke the page's own refs or fail a capture in
+    // flight, so only refs into subframes (native `f<N>e<M>`) are dropped, generation kept.
+    const onFrameChange = (frame: Frame) => {
+      if (frame === page.mainFrame()) return invalidateRefs(page);
+      for (const [ref, nativeRef] of created.refs) {
+        if (nativeRef.startsWith("f")) created.refs.delete(ref);
+      }
+    };
+    page.on("framenavigated", onFrameChange);
+    page.on("framedetached", onFrameChange);
   }
   return state;
 };

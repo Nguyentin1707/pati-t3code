@@ -229,6 +229,46 @@ describe("server browser element refs", () => {
     await expect(ServerBrowserPage.click(page, { locator })).rejects.toThrow(/stale/);
   });
 
+  describe("when an iframe changes", () => {
+    const framed =
+      '<button onclick="this.textContent=\'clicked\'">parent</button><iframe srcdoc="<button>child</button>"></iframe>';
+    const snapshotFramed = async () => {
+      await page.setContent(framed);
+      await page.frameLocator("iframe").getByRole("button").waitFor();
+      const tree = (await takeSnapshot()).accessibilityTree;
+      return {
+        parent: buttonLocator(tree, "parent"),
+        child: buttonLocator(tree, "child"),
+      };
+    };
+
+    it("keeps main-frame refs after an iframe navigates, and revokes refs into it", async () => {
+      const { parent, child } = await snapshotFramed();
+      const navigated = new Promise((resolve) => page.once("framenavigated", resolve));
+      await page.evaluate(
+        `document.querySelector("iframe").srcdoc = "<button>child</button><p>reloaded</p>"`,
+      );
+      await navigated;
+      await expect(
+        ServerBrowserPage.click(page, { locator: child, timeoutMs: 100 }),
+      ).rejects.toThrow(/stale/);
+      await ServerBrowserPage.click(page, { locator: parent, timeoutMs: 1_000 });
+      expect(await page.getByRole("button", { name: "clicked" }).count()).toBe(1);
+    });
+
+    it("keeps main-frame refs after an iframe is removed", async () => {
+      const { parent, child } = await snapshotFramed();
+      const detached = new Promise((resolve) => page.once("framedetached", resolve));
+      await page.locator("iframe").evaluate((frame) => frame.remove());
+      await detached;
+      await expect(
+        ServerBrowserPage.click(page, { locator: child, timeoutMs: 100 }),
+      ).rejects.toThrow(/stale/);
+      await ServerBrowserPage.click(page, { locator: parent, timeoutMs: 1_000 });
+      expect(await page.getByRole("button", { name: "clicked" }).count()).toBe(1);
+    });
+  });
+
   it.each(["aria-ref=e1", " aria-ref=e1", "css=body >> aria-ref=e1"])(
     "does not allow native refs to bypass generation validation (%s)",
     async (locator) => {
