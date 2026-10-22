@@ -9,6 +9,9 @@ export const BUILT_IN_THEME_IDS = [
 
 export const MOBILE_DEFAULT_THEME_ID = "t3-code";
 
+/** What a client shows before anyone picks a theme; the T3 Code palette stays selectable. */
+export const DEFAULT_THEME_ID: BuiltInThemeId = "pati-os";
+
 export const MOBILE_THEME_IDS = [MOBILE_DEFAULT_THEME_ID, ...BUILT_IN_THEME_IDS] as const;
 
 /**

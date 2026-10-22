@@ -232,7 +232,7 @@
         };
 
         try {
-          const storedTheme = window.localStorage.getItem("t3code:theme");
+          const rawStoredTheme = window.localStorage.getItem("t3code:theme");
           const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
           // Older builds stored the dark T3 Chat palette as its own theme id
           // and every maintainer theme under a t3- prefix; keep those
@@ -244,6 +244,19 @@
             "t3-ember": "ember",
             "t3-iris": "iris",
           };
+          // Mirrors the runtime's readThemePreference: a missing or unknown
+          // preference means the default theme, following the system appearance.
+          const DEFAULT_THEME_ID = "pati-os";
+          const rawThemeId =
+            rawStoredTheme === null ? "" : (LEGACY_THEME_IDS[rawStoredTheme] ?? rawStoredTheme);
+          const storedTheme =
+            rawStoredTheme === "light" ||
+            rawStoredTheme === "dark" ||
+            rawStoredTheme === "system" ||
+            BUILT_IN_THEME_MODES[rawThemeId] ||
+            findCustomTheme(rawThemeId)
+              ? rawStoredTheme
+              : DEFAULT_THEME_ID;
           const isLegacyT3ChatDark = storedTheme === "t3-chat-dark";
           const themeId =
             storedTheme === null ? "" : (LEGACY_THEME_IDS[storedTheme] ?? storedTheme);
@@ -281,7 +294,7 @@
               ? "system"
               : storedFollowSystem === "false"
                 ? preferenceMode
-                : theme === "system"
+                : theme === "system" || theme === DEFAULT_THEME_ID
                   ? "system"
                   : preferenceMode;
           // A valid mix half for the wanted appearance takes over: it decides
