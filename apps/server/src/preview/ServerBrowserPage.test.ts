@@ -152,6 +152,68 @@ describe("server browser element refs", () => {
     });
   });
 
+  it("does not treat a hidden element as visible", async () => {
+    await page.setContent('<p id="late" style="display:none">late</p>');
+    const failure = await ServerBrowserPage.waitFor(page, {
+      selector: "#late",
+      timeoutMs: 150,
+    }).catch(ServerBrowserPage.toOperationError);
+    expect(failure).toMatchObject({
+      tag: "PreviewAutomationTimeoutError",
+      detail: { unmet: ["locator"] },
+    });
+  });
+
+  it("waits for a spinner removed by a click to be hidden", async () => {
+    await page.setContent(
+      "<div id=\"spinner\">loading</div><button onclick=\"document.getElementById('spinner').style.display='none'\">done</button>",
+    );
+    const waiting = ServerBrowserPage.waitFor(page, {
+      selector: "#spinner",
+      state: "hidden",
+      timeoutMs: 5_000,
+    });
+    await page.click("button");
+    await waiting;
+  });
+
+  it("waits for text to disappear when the state is hidden", async () => {
+    await page.setContent("<p>Saving…</p>");
+    const waiting = ServerBrowserPage.waitFor(page, {
+      text: "Saving…",
+      state: "hidden",
+      timeoutMs: 5_000,
+    });
+    await page.evaluate("document.querySelector('p').remove()");
+    await waiting;
+  });
+
+  it("names the locator as unmet while an element stays visible", async () => {
+    await page.setContent('<div id="spinner">loading</div>');
+    const failure = await ServerBrowserPage.waitFor(page, {
+      selector: "#spinner",
+      state: "hidden",
+      timeoutMs: 150,
+    }).catch(ServerBrowserPage.toOperationError);
+    expect(failure).toMatchObject({
+      tag: "PreviewAutomationTimeoutError",
+      detail: { unmet: ["locator"] },
+    });
+  });
+
+  it("stops waiting when control of the tab changes hands", async () => {
+    await page.setContent("<p>hello</p>");
+    const control = { generation: 0 };
+    const waiting = ServerBrowserPage.waitFor(
+      page,
+      { selector: "#missing", timeoutMs: 5_000 },
+      undefined,
+      control,
+    );
+    control.generation++;
+    await expect(waiting).rejects.toMatchObject({ reason: "interrupted" });
+  });
+
   it("does not retarget a removed ref to a replacement node", async () => {
     await page.setContent("<button onclick=\"this.textContent='clicked'\">original</button>");
     const locator = buttonLocator((await takeSnapshot()).accessibilityTree, "original");

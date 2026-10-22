@@ -1933,7 +1933,7 @@ const make = Effect.gen(function* () {
         tab.agentOperating = !READ_OPERATIONS.has(request.operation);
         updateFileChooserInterception(tab);
         try {
-          return await executeTabOperation(tab, request, deadlineMs);
+          return await executeTabOperation(tab, request, deadlineMs, tab.control);
         } finally {
           tab.agentOperating = false;
           updateFileChooserInterception(tab);
@@ -1948,11 +1948,12 @@ const make = Effect.gen(function* () {
     tab: ServerTab,
     request: PreviewAutomationRequest,
     deadlineMs: number,
+    interruptedBy?: { readonly generation: number },
   ) =>
     // Navigation, snapshots and recordings end on timeouts of their own that say more than a
     // generic expiry would.
     SELF_BOUNDED_OPERATIONS.has(request.operation)
-      ? runTabOperation(tab, request, deadlineMs)
+      ? runTabOperation(tab, request, deadlineMs, interruptedBy)
       : ServerBrowserPage.withDeadline(
           tab.cdp,
           {
@@ -1963,13 +1964,14 @@ const make = Effect.gen(function* () {
             label:
               request.operation === "evaluate" ? "Evaluation" : `The ${request.operation} action`,
           },
-          () => runTabOperation(tab, request, deadlineMs),
+          () => runTabOperation(tab, request, deadlineMs, interruptedBy),
         );
 
   const runTabOperation = async (
     tab: ServerTab,
     request: PreviewAutomationRequest,
     deadlineMs: number,
+    interruptedBy?: { readonly generation: number },
   ) => {
     const input = request.input;
     switch (request.operation) {
@@ -2061,7 +2063,12 @@ const make = Effect.gen(function* () {
       case "evaluate":
         return ServerBrowserPage.evaluate(tab.cdp, input as PreviewAutomationEvaluateInput);
       case "waitFor":
-        return ServerBrowserPage.waitFor(tab.page, input as PreviewAutomationWaitForInput);
+        return ServerBrowserPage.waitFor(
+          tab.page,
+          input as PreviewAutomationWaitForInput,
+          deadlineMs,
+          interruptedBy,
+        );
       case "recordingStart": {
         const recording = await startRecording(tab);
         return { tabId: tab.tabId, recording: true, startedAt: recording.startedAt };

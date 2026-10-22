@@ -642,16 +642,22 @@ export const PreviewAutomationWaitForInput = Schema.Struct({
   }),
   text: Schema.optional(
     TrimmedNonEmptyString.annotate({
-      description: "Case-sensitive substring that must appear in visible document text.",
+      description:
+        "Case-sensitive substring that must appear in visible document text (or be gone, with state hidden).",
     }),
   ).annotate({
-    description: "Case-sensitive substring that must appear in visible document text.",
+    description:
+      "Case-sensitive substring that must appear in visible document text (or be gone, with state hidden).",
   }),
   urlIncludes: Schema.optional(
     TrimmedNonEmptyString.annotate({
       description: "Substring that must appear in the current absolute URL.",
     }),
   ).annotate({ description: "Substring that must appear in the current absolute URL." }),
+  state: Schema.optional(Schema.Literals(["visible", "hidden"])).annotate({
+    description:
+      "Whether the locator and text must be visible (default) or hidden. Use hidden to wait for a spinner, toast or 'Saving…' text to go away. A hidden element does not satisfy visible.",
+  }),
   timeoutMs: OptionalTimeoutMs,
 })
   .check(

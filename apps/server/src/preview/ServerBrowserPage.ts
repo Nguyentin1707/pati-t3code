@@ -959,36 +959,51 @@ export const evaluate = async (cdp: CDPSession, input: PreviewAutomationEvaluate
   return value;
 };
 
-export const waitFor = async (page: Page, input: PreviewAutomationWaitForInput) => {
+export const waitFor = async (
+  page: Page,
+  input: PreviewAutomationWaitForInput,
+  deadlineMs?: number,
+  // Polled so a human taking control is not queued behind a long wait.
+  control?: { readonly generation: number },
+) => {
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const deadline = Date.now() + timeoutMs;
+  const deadline = deadlineFor(input, deadlineMs);
+  const startGeneration = control?.generation;
+  const hidden = input.state === "hidden";
   const locator = targetLocator(page, input);
   const { text, urlIncludes } = input;
   const checks: Array<readonly [PreviewAutomationUnmetCondition, () => Promise<boolean>]> = [];
-  if (locator !== null) checks.push(["locator", async () => (await locator.count()) > 0]);
+  if (locator !== null) {
+    // A hidden node still exists, so `count()` cannot tell the two apart.
+    checks.push(["locator", async () => (await locator.first().isVisible()) !== hidden]);
+  }
   if (text !== undefined) {
-    // A navigation can destroy the context mid-check; that counts as not yet.
+    // A navigation can destroy the context mid-check; that counts as not yet either way.
     checks.push([
       "text",
       () =>
         page
           .evaluate(`(document.body?.innerText ?? "").includes(${JSON.stringify(text)})`)
-          .then((found) => found === true)
+          .then((found) => (found === true) !== hidden)
           .catch(() => false),
     ]);
   }
   if (urlIncludes !== undefined) checks.push(["url", async () => page.url().includes(urlIncludes)]);
   for (;;) {
+    if (control !== undefined && control.generation !== startGeneration) {
+      throw new BrowserControlInterrupted();
+    }
     const results = await Promise.all(checks.map(([, check]) => check()));
     if (results.every(Boolean)) return;
-    if (Date.now() >= deadline) {
+    const left = deadline - performance.now();
+    if (left <= 0) {
       throw new ServerBrowserOperationError(
         "PreviewAutomationTimeoutError",
         `Waited ${timeoutMs}ms without every condition holding.`,
         { unmet: checks.flatMap(([kind], index) => (results[index] ? [] : [kind])) },
       );
     }
-    await new Promise((resolve) => setTimeout(resolve, WAIT_POLL_MS));
+    await new Promise((resolve) => setTimeout(resolve, Math.min(WAIT_POLL_MS, left)));
   }
 };
 
