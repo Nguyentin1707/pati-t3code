@@ -198,7 +198,6 @@ const layerMcpAuthMiddleware = HttpRouter.middleware<{
  */
 export const MAX_SNAPSHOT_TEXT_BYTES = 20_000;
 const MAX_SNAPSHOT_VISIBLE_TEXT_CHARS = 8_000;
-const MAX_SNAPSHOT_ELEMENT_NAME_CHARS = 200;
 const MAX_SNAPSHOT_LOG_ENTRIES = 40;
 const MAX_SNAPSHOT_LOG_TEXT_CHARS = 500;
 const MAX_SNAPSHOT_IDENTIFIER_CHARS = 2_048;
@@ -227,28 +226,67 @@ type SnapshotMetadata = {
   readonly url: string;
   readonly title: string;
   readonly visibleText: string;
-  readonly interactiveElements: ReadonlyArray<{
-    readonly name: string;
-    readonly [key: string]: unknown;
-  }>;
   readonly consoleEntries: ReadonlyArray<unknown>;
   readonly networkEntries: ReadonlyArray<unknown>;
   readonly actionTimeline: ReadonlyArray<unknown>;
   readonly [key: string]: unknown;
 };
 
+// Bounding keeps what an agent debugs from: errors, and requests that failed.
+const field = (entry: unknown, key: string) =>
+  typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>)[key] : undefined;
+const isErrorEntry = (entry: unknown) => field(entry, "level") === "error";
+const isFailedRequest = (entry: unknown) => {
+  const status = field(entry, "status");
+  return field(entry, "failed") === true || (typeof status === "number" && status >= 400);
+};
+const isNoise = (isImportant: (entry: unknown) => boolean) => (entry: unknown) =>
+  !isImportant(entry);
+const always = () => true;
+
+/** Error logs keep this much of the budget before the page content has to give way to them. */
+const ERROR_LOG_RESERVE_BYTES = MAX_SNAPSHOT_TEXT_BYTES / 4;
+const TREE_SHRINK_STEP = 0.9;
+
+const lineCount = (text: string) => (text === "" ? 0 : text.split("\n").length);
+
+/** The longest run of whole lines within `chars`. */
+const wholeLines = (text: string, chars: number) => {
+  if (chars >= text.length) return text;
+  const head = text.slice(0, chars);
+  return text[chars] === "\n" ? head : head.slice(0, Math.max(0, head.lastIndexOf("\n")));
+};
+
 const boundSnapshotMetadata = (metadata: SnapshotMetadata) => {
   const omitted: Array<string> = [];
-  const { accessibilityTree, ...withoutTree } = metadata;
+  // Older hosts still send the always-empty `interactiveElements`.
+  const {
+    accessibilityTree,
+    visibleText,
+    interactiveElements: _interactiveElements,
+    ...rest
+  } = metadata;
   const ariaTree = typeof accessibilityTree === "string" ? accessibilityTree : undefined;
   if (accessibilityTree !== undefined && ariaTree === undefined) {
-    omitted.push("accessibilityTree (use interactiveElements locators or preview_evaluate)");
+    omitted.push("accessibilityTree (use preview_evaluate)");
   }
-  const tail = <A>(entries: ReadonlyArray<A>, label: string) => {
+  const newest = <A>(
+    entries: ReadonlyArray<A>,
+    label: string,
+    isImportant: (entry: unknown) => boolean,
+  ) => {
+    let kept = entries;
     if (entries.length > MAX_SNAPSHOT_LOG_ENTRIES) {
       omitted.push(`${entries.length - MAX_SNAPSHOT_LOG_ENTRIES} older ${label}`);
+      // Important entries take the slots first, so a noisy log can't push an error out.
+      const slots = new Set<number>();
+      for (const wanted of [true, false]) {
+        for (let i = entries.length - 1; i >= 0 && slots.size < MAX_SNAPSHOT_LOG_ENTRIES; i--) {
+          if (isImportant(entries[i]) === wanted) slots.add(i);
+        }
+      }
+      kept = entries.filter((_, i) => slots.has(i));
     }
-    const kept = entries.slice(-MAX_SNAPSHOT_LOG_ENTRIES);
     if (kept.some((entry) => hasLongString(entry, MAX_SNAPSHOT_LOG_TEXT_CHARS))) {
       omitted.push(`${label} text after ${MAX_SNAPSHOT_LOG_TEXT_CHARS} characters`);
     }
@@ -260,97 +298,88 @@ const boundSnapshotMetadata = (metadata: SnapshotMetadata) => {
   ) {
     omitted.push(`url or title after ${MAX_SNAPSHOT_IDENTIFIER_CHARS} characters`);
   }
-  if (
-    metadata.interactiveElements.some(
-      (element) => element.name.length > MAX_SNAPSHOT_ELEMENT_NAME_CHARS,
-    )
-  ) {
-    omitted.push(`element names longer than ${MAX_SNAPSHOT_ELEMENT_NAME_CHARS} characters`);
-  }
   const bounded = {
-    ...withoutTree,
+    ...rest,
     url: cutText(metadata.url, MAX_SNAPSHOT_IDENTIFIER_CHARS),
     title: cutText(metadata.title, MAX_SNAPSHOT_IDENTIFIER_CHARS),
-    interactiveElements: metadata.interactiveElements.map((element) => ({
-      ...element,
-      name: cutText(element.name, MAX_SNAPSHOT_ELEMENT_NAME_CHARS),
-    })),
-    consoleEntries: tail(metadata.consoleEntries, "console entries"),
-    networkEntries: tail(metadata.networkEntries, "network entries"),
-    actionTimeline: tail(metadata.actionTimeline, "action timeline entries"),
   };
+  const lists = {
+    consoleEntries: newest(metadata.consoleEntries, "console entries", isErrorEntry),
+    networkEntries: newest(metadata.networkEntries, "network entries", isFailedRequest),
+    actionTimeline: newest(metadata.actionTimeline, "action timeline entries", () => false),
+  };
+  const kept = { ...lists };
+  const dropped = { consoleEntries: 0, networkEntries: 0, actionTimeline: 0 };
 
   // Per-field caps do not sum below the ceiling: three log arrays of 40 capped
   // entries alone can pass 60 KB, and the caps count characters, not bytes.
-  const shedOrder = [
-    "actionTimeline",
-    "networkEntries",
-    "consoleEntries",
-    "interactiveElements",
-  ] as const;
-  const lists: Record<(typeof shedOrder)[number], ReadonlyArray<unknown>> = {
-    interactiveElements: bounded.interactiveElements,
-    consoleEntries: bounded.consoleEntries,
-    networkEntries: bounded.networkEntries,
-    actionTimeline: bounded.actionTimeline,
-  };
-  const dropped: Record<(typeof shedOrder)[number], number> = {
-    interactiveElements: 0,
-    consoleEntries: 0,
-    networkEntries: 0,
-    actionTimeline: 0,
-  };
-  let visibleTextChars = Math.min(metadata.visibleText.length, MAX_SNAPSHOT_VISIBLE_TEXT_CHARS);
+  // The tree holds the page's text, so `visibleText` is only a fallback for a host without one.
+  let visibleTextChars =
+    ariaTree === undefined ? Math.min(visibleText.length, MAX_SNAPSHOT_VISIBLE_TEXT_CHARS) : 0;
   let ariaTreeChars = Math.min(ariaTree?.length ?? 0, 20_000);
+  const shownTree = () => (ariaTree === undefined ? "" : wholeLines(ariaTree, ariaTreeChars));
   const value = () => ({
     ...bounded,
-    ...(ariaTree === undefined ? {} : { accessibilityTree: cutText(ariaTree, ariaTreeChars) }),
-    visibleText: cutText(metadata.visibleText, visibleTextChars),
+    ...(ariaTree === undefined
+      ? { visibleText: cutText(visibleText, visibleTextChars) }
+      : { accessibilityTree: shownTree() }),
     ...lists,
   });
+
+  const dropOldest = (key: keyof typeof lists, droppable: (entry: unknown) => boolean) => {
+    const before = lists[key];
+    let drop = Math.ceil(before.filter(droppable).length / 2);
+    if (drop === 0) return false;
+    lists[key] = before.filter((entry) => !droppable(entry) || drop-- <= 0);
+    dropped[key] += before.length - lists[key].length;
+    return true;
+  };
+  const errorLogBytes = () =>
+    utf8Length(encodeJsonText([lists.consoleEntries, lists.networkEntries]));
+  const shrinkPageContent = () => {
+    if (ariaTree === undefined) {
+      if (visibleTextChars === 0) return false;
+      visibleTextChars = Math.floor(visibleTextChars / 2);
+      return true;
+    }
+    const shown = shownTree().length;
+    if (shown === 0) return false;
+    ariaTreeChars = Math.min(shown - 1, Math.floor(shown * TREE_SHRINK_STEP));
+    return true;
+  };
+  const shedErrorLog = () =>
+    lists.consoleEntries.length >= lists.networkEntries.length
+      ? dropOldest("consoleEntries", always) || dropOldest("networkEntries", always)
+      : dropOldest("networkEntries", always) || dropOldest("consoleEntries", always);
+  // Cheapest first; errors outlast the page content until they alone exceed their reserve.
+  const steps = [
+    () => dropOldest("actionTimeline", always),
+    () => dropOldest("consoleEntries", isNoise(isErrorEntry)),
+    () => dropOldest("networkEntries", isNoise(isFailedRequest)),
+    () => errorLogBytes() > ERROR_LOG_RESERVE_BYTES && shedErrorLog(),
+    shrinkPageContent,
+    shedErrorLog,
+  ];
+
   let text = encodeJsonText(value());
   while (utf8Length(text) > MAX_SNAPSHOT_TEXT_BYTES) {
-    // Elements carry the locators, so they go last; logs shed newest-last.
-    const key =
-      shedOrder.find(
-        (candidate) => candidate !== "interactiveElements" && lists[candidate].length > 0,
-      ) ??
-      (visibleTextChars > 0
-        ? "visibleText"
-        : lists.interactiveElements.length > 0
-          ? "interactiveElements"
-          : ariaTreeChars > 0
-            ? "accessibilityTree"
-            : undefined);
-    if (key === undefined) break;
-    if (key === "visibleText") {
-      visibleTextChars = Math.floor(visibleTextChars / 2);
-    } else if (key === "accessibilityTree") {
-      ariaTreeChars = Math.floor(ariaTreeChars / 2);
-    } else {
-      const keep = Math.floor(lists[key].length / 2);
-      dropped[key] += lists[key].length - keep;
-      // slice(-0) keeps everything, so spell out the empty case.
-      lists[key] =
-        keep === 0
-          ? []
-          : key === "interactiveElements"
-            ? lists[key].slice(0, keep)
-            : lists[key].slice(-keep);
-    }
+    if (!steps.some((step) => step())) break;
     text = encodeJsonText(value());
   }
-  if (visibleTextChars < metadata.visibleText.length) {
+  if (ariaTree === undefined && visibleTextChars < visibleText.length) {
     omitted.push(
       `visibleText after ${visibleTextChars} characters (use preview_evaluate for more)`,
     );
   }
-  if (ariaTree !== undefined && ariaTreeChars < ariaTree.length) {
-    omitted.push(`accessibilityTree after ${ariaTreeChars} characters`);
+  if (ariaTree !== undefined) {
+    const hidden = lineCount(ariaTree) - lineCount(shownTree());
+    if (hidden > 0) {
+      omitted.push(`${hidden} of ${lineCount(ariaTree)} accessibilityTree lines`);
+    }
   }
-  for (const key of shedOrder) {
+  for (const key of Object.keys(dropped) as Array<keyof typeof dropped>) {
     if (dropped[key] > 0) {
-      omitted.push(`${dropped[key]} of ${bounded[key].length} ${key}`);
+      omitted.push(`${dropped[key]} of ${kept[key].length} ${key}`);
     }
   }
   return { value: value(), text, omitted };
@@ -497,7 +526,8 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
             Effect.gen(function* () {
               const snapshot = encodedResult as SnapshotMetadata & {
                 readonly url: string;
-                readonly screenshot: {
+                // Absent when the host took no image; an older host sends one regardless.
+                readonly screenshot?: {
                   readonly mimeType: "image/png";
                   readonly data: string;
                   readonly width: number;
@@ -505,9 +535,14 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
                 };
               };
               const { screenshot, ...page } = snapshot;
-              const png = new Uint8Array(Buffer.from(screenshot.data, "base64"));
+              const png =
+                screenshot === undefined
+                  ? undefined
+                  : new Uint8Array(Buffer.from(screenshot.data, "base64"));
               const screenshotPath =
-                payload?.save === true ? yield* saveScreenshot(snapshot.url, png) : undefined;
+                payload?.save === true && png !== undefined
+                  ? yield* saveScreenshot(snapshot.url, png)
+                  : undefined;
               // Images stay out of tool history unless asked for: providers replay them on every
               // later request, and some reject inline images outright.
               const includeImage = payload?.includeImage === true;
@@ -524,11 +559,15 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
               }
               const metadata = {
                 ...page,
-                screenshot: {
-                  mimeType: screenshot.mimeType,
-                  width: screenshot.width,
-                  height: screenshot.height,
-                },
+                ...(screenshot === undefined
+                  ? {}
+                  : {
+                      screenshot: {
+                        mimeType: screenshot.mimeType,
+                        width: screenshot.width,
+                        height: screenshot.height,
+                      },
+                    }),
                 ...(screenshotPath === undefined ? {} : { screenshotPath }),
               };
               const bounded = boundSnapshotMetadata(metadata);
@@ -554,7 +593,7 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
                           text: `Snapshot text was bounded. Omitted: ${bounded.omitted.join("; ")}.`,
                         },
                       ]),
-                  ...(includeImage
+                  ...(includeImage && screenshot !== undefined && png !== undefined
                     ? [{ type: "image" as const, data: png, mimeType: screenshot.mimeType }]
                     : []),
                 ],

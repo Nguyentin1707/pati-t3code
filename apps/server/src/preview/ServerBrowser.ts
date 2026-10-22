@@ -807,6 +807,9 @@ const make = Effect.gen(function* () {
     page.on("request", (request) => {
       if (!isMainNavigation(request)) return;
       navigationGenerations.set(request, ++tab.navigationGeneration);
+      // Diagnostics describe the current document; this navigation's own failures arrive after.
+      tab.consoleEntries.length = 0;
+      tab.networkEntries.length = 0;
       clearAbortedNavigation(tab);
       tab.loading = true;
       report(tab, {
@@ -868,12 +871,22 @@ const make = Effect.gen(function* () {
         description,
       });
     });
+    // Successful responses are most of a dev page's traffic and would evict the failures.
     page.on("response", (response) => {
+      if (response.status() < 400) return;
       pushBounded(tab.networkEntries, {
         url: ServerBrowserPage.withoutDataPayload(response.url()),
         method: response.request().method(),
         status: response.status(),
         failed: false,
+        timestamp: new Date().toISOString(),
+      });
+    });
+    page.on("pageerror", (error) => {
+      pushBounded(tab.consoleEntries, {
+        level: "error",
+        text: (error.stack ?? error.message).slice(0, 2_000),
+        source: "pageerror",
         timestamp: new Date().toISOString(),
       });
     });
@@ -2027,12 +2040,15 @@ const make = Effect.gen(function* () {
         return { tabId: tab.tabId, colorScheme };
       }
       case "snapshot": {
-        return withScreencastsPaused(tab, () =>
+        const image = (input as { readonly image?: boolean } | undefined)?.image === true;
+        const snapshot = () =>
           ServerBrowserPage.snapshot({
             ...tab,
+            image,
             renderScale: tab.desktop ? "display" : RENDER_SCALE,
-          }),
-        );
+          });
+        // Still serialized with other captures, but viewers and recordings keep streaming.
+        return image ? withScreencastsPaused(tab, snapshot) : withCaptureLock(tab, snapshot);
       }
       case "click": {
         const clickInput = input as PreviewAutomationClickInput;

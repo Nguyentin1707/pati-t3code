@@ -750,17 +750,21 @@ export const PreviewAutomationSnapshot = Schema.Struct({
   title: Schema.String,
   loading: Schema.Boolean,
   visibleText: Schema.String,
-  interactiveElements: Schema.Array(PreviewAutomationElement),
+  // Older hosts still send this; no current host fills it.
+  interactiveElements: Schema.optional(Schema.Array(PreviewAutomationElement)),
   accessibilityTree: Schema.Unknown,
   consoleEntries: Schema.Array(PreviewAutomationConsoleEntry),
   networkEntries: Schema.Array(PreviewAutomationNetworkEntry),
   actionTimeline: Schema.Array(PreviewAutomationActionEvent),
-  screenshot: Schema.Struct({
-    mimeType: Schema.Literal("image/png"),
-    data: Schema.String,
-    width: Schema.Int,
-    height: Schema.Int,
-  }),
+  // Absent when the host was not asked for an image; older hosts always send one.
+  screenshot: Schema.optional(
+    Schema.Struct({
+      mimeType: Schema.Literal("image/png"),
+      data: Schema.String,
+      width: Schema.Int,
+      height: Schema.Int,
+    }),
+  ),
 });
 export type PreviewAutomationSnapshot = typeof PreviewAutomationSnapshot.Type;
 
