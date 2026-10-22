@@ -176,6 +176,13 @@ const hostAssignmentKey = (scope: McpInvocationContext.McpThreadInvocationScope)
 
 const isPreviewTabId = Schema.is(PreviewTabId);
 const decodeControlReason = Schema.decodeUnknownOption(PreviewAutomationControlReason);
+// Hosts send the bare reason; the server browser adds the owned tab ids for tabRequired.
+const decodeControlDetail = Schema.decodeUnknownOption(
+  Schema.Struct({
+    reason: PreviewAutomationControlReason,
+    ownedTabIds: Schema.optional(Schema.Array(PreviewTabId)),
+  }),
+);
 
 const readResultTabId = (result: unknown): PreviewTabId | null | undefined => {
   if (typeof result !== "object" || result === null || !("tabId" in result)) return undefined;
@@ -260,10 +267,13 @@ const classifyResponseError = (
       });
     case "PreviewAutomationControlInterruptedError": {
       const reason = decodeControlReason(error.detail);
+      const detail = Option.isSome(reason)
+        ? { reason: reason.value }
+        : Option.getOrUndefined(decodeControlDetail(error.detail));
       return new PreviewAutomationControlInterruptedError({
         ...context,
         ...remoteDiagnostics,
-        ...(Option.isSome(reason) ? { reason: reason.value } : {}),
+        ...detail,
       });
     }
     case "PreviewAutomationInvalidSelectorError": {

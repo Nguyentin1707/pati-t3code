@@ -82,6 +82,17 @@ export const PreviewAutomationProfile = Schema.Struct({
 });
 export type PreviewAutomationProfile = typeof PreviewAutomationProfile.Type;
 
+const PreviewAutomationDialogState = Schema.Struct({
+  type: Schema.String,
+  message: Schema.String,
+  defaultValue: Schema.String,
+});
+
+const PreviewAutomationFileChooserState = Schema.Struct({
+  multiple: Schema.Boolean,
+  accept: Schema.String,
+});
+
 export const PreviewAutomationStatus = Schema.Struct({
   available: Schema.Boolean,
   visible: Schema.Boolean,
@@ -96,20 +107,10 @@ export const PreviewAutomationStatus = Schema.Struct({
       generation: Schema.Number,
     }),
   ),
-  dialog: Schema.optional(
-    Schema.NullOr(
-      Schema.Struct({
-        type: Schema.String,
-        message: Schema.String,
-        defaultValue: Schema.String,
-      }),
-    ),
-  ),
+  dialog: Schema.optional(Schema.NullOr(PreviewAutomationDialogState)),
   viewportSetting: Schema.optional(PreviewViewportSetting),
   viewport: Schema.optional(PreviewRenderedViewportSize),
-  fileChooser: Schema.optional(
-    Schema.NullOr(Schema.Struct({ multiple: Schema.Boolean, accept: Schema.String })),
-  ),
+  fileChooser: Schema.optional(Schema.NullOr(PreviewAutomationFileChooserState)),
   downloads: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -143,6 +144,30 @@ export const PreviewAutomationStatus = Schema.Struct({
   defaultProfileId: Schema.optional(BrowserProfileId),
 });
 export type PreviewAutomationStatus = typeof PreviewAutomationStatus.Type;
+
+/**
+ * What an action leaves behind, read right after it ran. The page can still be
+ * mid-navigation, so `url` may be the one from before the action.
+ */
+export const PreviewAutomationActionPage = Schema.Struct({
+  url: Schema.NullOr(Schema.String),
+  title: Schema.NullOr(Schema.String),
+  loading: Schema.Boolean,
+  dialog: Schema.optional(PreviewAutomationDialogState),
+  fileChooser: Schema.optional(PreviewAutomationFileChooserState),
+});
+export type PreviewAutomationActionPage = typeof PreviewAutomationActionPage.Type;
+
+export const PreviewAutomationOpenedTab = Schema.Struct({
+  tabId: PreviewTabId,
+  url: Schema.NullOr(Schema.String),
+});
+
+/** Optional on every host: the desktop browser does not report adopted popups. */
+export const PreviewAutomationInputResult = Schema.Struct({
+  openedTabs: Schema.optional(Schema.Array(PreviewAutomationOpenedTab)),
+});
+export type PreviewAutomationInputResult = typeof PreviewAutomationInputResult.Type;
 
 export const PreviewAutomationDialogInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
@@ -971,6 +996,7 @@ export class PreviewAutomationControlInterruptedError extends Schema.TaggedError
     ...PreviewAutomationRequestErrorFields,
     ...PreviewAutomationRemoteDiagnosticFields,
     reason: Schema.optional(PreviewAutomationControlReason),
+    ownedTabIds: Schema.optional(Schema.Array(PreviewTabId)),
   },
 ) {
   override get message(): string {
@@ -979,7 +1005,11 @@ export class PreviewAutomationControlInterruptedError extends Schema.TaggedError
     if (this.reason === "humanControl")
       return "A human controls this browser tab. Wait until they release control.";
     if (this.reason === "tabRequired")
-      return "Multiple browser tabs belong to this session. Pass a tabId from preview_open or from the tabs listed by preview_status.";
+      return `Multiple browser tabs belong to this session${
+        this.ownedTabIds === undefined || this.ownedTabIds.length === 0
+          ? ""
+          : ` (tabIds: ${this.ownedTabIds.join(", ")})`
+      }. Pass a tabId from preview_open or from the tabs listed by preview_status.`;
     if (this.reason === "dialogPending")
       return "A browser dialog is pending. Read preview_status and resolve it with preview_dialog.";
     if (this.reason === "tabLimit")

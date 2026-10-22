@@ -178,6 +178,8 @@ function makeContext(onClose?: (context: BrowserContext) => void) {
       visibleText: "delete",
       interactiveElements: [],
     })),
+    mouse: { click: vi.fn(async () => {}) },
+    keyboard: { press: vi.fn(async () => {}) },
     ariaSnapshot: vi.fn(async () => '- button "delete" [ref=e1]'),
     locator: vi.fn(() => {
       throw new Error("Unexpected locator action");
@@ -492,6 +494,59 @@ it.live("enforces provider ownership and explicit targets when a session has mul
       expect(contexts).toHaveLength(2);
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.live(
+  "reports tabs a click or key press opened and names the owned tabs when targeting is ambiguous",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, tabId } = yield* ready;
+        const page = contexts[0]!.page;
+        const popup = makeContext().page;
+        let openedUrl = "https://example.com/popup";
+        popup.url = () => openedUrl;
+        page.mouse.click.mockImplementationOnce(async () => {
+          page.emit("popup", popup);
+        });
+        const clicked = yield* broker.invoke<{
+          openedTabs?: ReadonlyArray<{ tabId: string; url: string | null }>;
+        }>({ scope, tabId, operation: "click", input: { x: 10, y: 10 } });
+        expect(clicked.openedTabs).toEqual([{ tabId: expect.any(String), url: openedUrl }]);
+        const popupTabId = clicked.openedTabs![0]!.tabId;
+        expect(popupTabId).not.toBe(tabId);
+
+        const quiet = yield* broker.invoke<unknown>({
+          scope,
+          tabId,
+          operation: "click",
+          input: { x: 10, y: 10 },
+        });
+        expect(quiet).toBeUndefined();
+
+        openedUrl = "https://example.com/second";
+        page.keyboard.press.mockImplementationOnce(async () => {
+          page.emit("popup", makeContext().page);
+        });
+        const pressed = yield* broker.invoke<{ openedTabs?: ReadonlyArray<unknown> }>({
+          scope,
+          tabId,
+          operation: "press",
+          input: { key: "Enter" },
+        });
+        expect(pressed.openedTabs).toHaveLength(1);
+
+        const ambiguous = yield* broker
+          .invoke<void>({ scope, operation: "snapshot", input: {} })
+          .pipe(Effect.flip);
+        expect(ambiguous).toMatchObject({
+          _tag: "PreviewAutomationControlInterruptedError",
+          reason: "tabRequired",
+          ownedTabIds: [tabId, popupTabId, (pressed.openedTabs![0] as { tabId: string }).tabId],
+        });
+        expect(ambiguous.message).toContain(popupTabId);
+      }),
+    ).pipe(Effect.provide(layer)),
 );
 
 it.live("streams to a read-only viewer without allowing takeover, input, or viewport changes", () =>

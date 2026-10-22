@@ -1,6 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  PreviewAutomationNoAvailableHostError,
+  PreviewTabId,
+  ProviderInstanceId,
+  ThreadId,
+  type PreviewAutomationStatus,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -11,7 +18,111 @@ import {
   parseThreadSegmentFromAttachmentId,
 } from "../../../attachmentStore.ts";
 import * as ServerConfig from "../../../config.ts";
-import { claimPreviewRecording } from "./handlers.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
+import { claimPreviewRecording, invokeTargeted } from "./handlers.ts";
+
+const scope: McpInvocationContext.McpThreadInvocationScope = {
+  environmentId: EnvironmentId.make("handlers-test-environment"),
+  requestNamespace: "handlers-test",
+  thread: {
+    threadId: ThreadId.make("handlers-test-thread"),
+    providerSessionId: "agent-a",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+  },
+  client: undefined,
+  capabilities: new Set(["preview"] as const),
+  issuedAt: 1,
+};
+
+const baseStatus: PreviewAutomationStatus = {
+  available: true,
+  visible: true,
+  tabId: PreviewTabId.make("tab-1"),
+  url: "https://example.com/form",
+  title: "Form",
+  loading: false,
+};
+
+const runAction = (
+  operation: "click" | "press",
+  actionResult: unknown,
+  status: PreviewAutomationStatus | "failure",
+) =>
+  invokeTargeted<object>(operation, {}).pipe(
+    Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+    Effect.provide(
+      Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({
+        invoke: <A>(request: PreviewAutomationBroker.PreviewAutomationInvokeInput) =>
+          request.operation !== "status"
+            ? (Effect.succeed(actionResult) as Effect.Effect<A>)
+            : status === "failure"
+              ? Effect.fail(
+                  new PreviewAutomationNoAvailableHostError({
+                    operation: "status",
+                    environmentId: scope.environmentId,
+                    threadId: scope.thread.threadId,
+                    providerSessionId: scope.thread.providerSessionId,
+                    providerInstanceId: scope.thread.providerInstanceId,
+                  }),
+                )
+              : (Effect.succeed(status) as Effect.Effect<A>),
+      }),
+    ),
+  );
+
+describe("action results", () => {
+  it.effect("report the page state, a pending dialog, and tabs the action opened", () =>
+    Effect.gen(function* () {
+      const openedTabs = [{ tabId: "tab-2", url: "https://example.com/popup" }];
+      const result = yield* runAction(
+        "click",
+        { openedTabs },
+        {
+          ...baseStatus,
+          dialog: { type: "confirm", message: "Delete it?", defaultValue: "" },
+          fileChooser: null,
+        },
+      );
+      expect(result).toEqual({
+        openedTabs,
+        page: {
+          url: "https://example.com/form",
+          title: "Form",
+          loading: false,
+          dialog: { type: "confirm", message: "Delete it?", defaultValue: "" },
+        },
+        toolIcon: { _tag: "website", pageUrl: "https://example.com/form" },
+      });
+    }),
+  );
+
+  it.effect("keep the page small and omit a dialog and file chooser that are not open", () =>
+    Effect.gen(function* () {
+      const result = yield* runAction("press", undefined, {
+        ...baseStatus,
+        url: `https://example.com/${"a".repeat(5_000)}`,
+        title: "t".repeat(5_000),
+        loading: true,
+        dialog: null,
+        fileChooser: { multiple: true, accept: ".csv" },
+      });
+      expect(result).toMatchObject({
+        page: { loading: true, fileChooser: { multiple: true, accept: ".csv" } },
+      });
+      const page = (result as { page: Record<string, unknown> }).page;
+      expect(page).not.toHaveProperty("dialog");
+      expect(JSON.stringify(page).length).toBeLessThan(3_000);
+    }),
+  );
+
+  it.effect("still succeed without a page when the status read fails", () =>
+    Effect.gen(function* () {
+      const result = yield* runAction("click", undefined, "failure");
+      expect(result).toEqual({});
+    }),
+  );
+});
 
 describe("claimPreviewRecording", () => {
   it.effect("overlapping and repeated claims return the same retained recording", () =>

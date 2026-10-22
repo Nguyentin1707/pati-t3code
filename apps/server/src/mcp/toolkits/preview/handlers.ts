@@ -9,6 +9,7 @@ import {
   PreviewAutomationRecordingArtifact,
   type ToolActivityIcon,
   type ThreadId,
+  type PreviewAutomationActionPage,
   type PreviewAutomationOperation,
   type PreviewAutomationOpenInput,
   type PreviewAutomationRecordingStatus,
@@ -47,13 +48,33 @@ function normalizePreviewOpenInput(input: PreviewAutomationOpenInput): PreviewAu
   };
 }
 
+const PAGE_URL_MAX_LENGTH = 2_048;
+const PAGE_TITLE_MAX_LENGTH = 256;
+const PAGE_DIALOG_MESSAGE_MAX_LENGTH = 512;
+
+// Action results go to every provider on every step, so the page stays a few hundred bytes.
+const toActionPage = (status: PreviewAutomationStatus): PreviewAutomationActionPage => ({
+  url: status.url?.slice(0, PAGE_URL_MAX_LENGTH) ?? null,
+  title: status.title?.slice(0, PAGE_TITLE_MAX_LENGTH) ?? null,
+  loading: status.loading,
+  ...(status.dialog
+    ? {
+        dialog: {
+          ...status.dialog,
+          message: status.dialog.message.slice(0, PAGE_DIALOG_MESSAGE_MAX_LENGTH),
+        },
+      }
+    : {}),
+  ...(status.fileChooser ? { fileChooser: status.fileChooser } : {}),
+});
+
 const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
   operation: PreviewAutomationOperation,
   input: unknown,
   timeoutMs?: number,
   tabId?: PreviewTabId,
 ): Effect.fn.Return<
-  { result: A; toolIcon?: ToolActivityIcon },
+  { result: A; toolIcon?: ToolActivityIcon; page?: PreviewAutomationActionPage },
   import("@t3tools/contracts").PreviewAutomationError,
   McpInvocationContext.McpInvocationContext | PreviewAutomationBroker.PreviewAutomationBroker
 > {
@@ -87,13 +108,14 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
     .pipe(Effect.orElseSucceed(() => null));
   return {
     result,
+    ...(page ? { page: toActionPage(page) } : {}),
     ...(page?.url && /^https?:\/\//i.test(page.url) && page.url.length <= 4096
       ? { toolIcon: { _tag: "website" as const, pageUrl: page.url } }
       : {}),
   };
 });
 
-const invokeTargeted = <A extends object>(
+export const invokeTargeted = <A extends object>(
   operation: PreviewAutomationOperation,
   input: {
     readonly tabId?: PreviewTabId | undefined;
@@ -103,9 +125,10 @@ const invokeTargeted = <A extends object>(
 ) => {
   const { tabId, ...operationInput } = input;
   return invoke<A>(operation, operationInput, timeoutMs, tabId).pipe(
-    Effect.map(({ result, toolIcon }) => ({
+    Effect.map(({ result, toolIcon, page }) => ({
       ...result,
       ...(toolIcon ? { toolIcon } : {}),
+      ...(page ? { page } : {}),
     })),
   );
 };
@@ -227,9 +250,10 @@ const handlers = {
   preview_scroll: McpToolAccess.actsAsCaller((input) => invokeTargeted<object>("scroll", input)),
   preview_evaluate: McpToolAccess.actsAsCaller(({ tabId, ...input }) =>
     invoke<unknown>("evaluate", input, undefined, tabId).pipe(
-      Effect.map(({ result, toolIcon }) => ({
+      Effect.map(({ result, toolIcon, page }) => ({
         value: result ?? null,
         ...(toolIcon ? { toolIcon } : {}),
+        ...(page ? { page } : {}),
       })),
     ),
   ),
