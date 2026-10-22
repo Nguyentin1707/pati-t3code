@@ -317,6 +317,82 @@ it.effect.each([
   ),
 );
 
+it.effect.each([
+  {
+    name: "ambiguous selector",
+    error: {
+      _tag: "PreviewAutomationInvalidSelectorError",
+      message: "strict mode violation",
+      detail: { hint: "ambiguous", matchCount: 3 },
+    },
+    includes: "matched 3 elements",
+  },
+  {
+    name: "covered target",
+    error: {
+      _tag: "PreviewAutomationTimeoutError",
+      message: "Timeout",
+      detail: { hint: "covered" },
+    },
+    includes: "close the overlay",
+  },
+  {
+    name: "unmet wait conditions",
+    error: {
+      _tag: "PreviewAutomationTimeoutError",
+      message: "Timeout",
+      detail: { unmet: ["text", "url"] },
+    },
+    includes: "text, url",
+  },
+  {
+    name: "disabled control",
+    error: {
+      _tag: "PreviewAutomationExecutionError",
+      message: "Timeout",
+      detail: { hint: "notEnabled" },
+    },
+    includes: "disabled",
+  },
+  {
+    name: "unknown hint",
+    error: {
+      _tag: "PreviewAutomationTimeoutError",
+      message: "Timeout",
+      detail: { hint: "madeUp", matchCount: 0, unmet: ["css"] },
+    },
+    includes: undefined,
+  },
+])("carries the failure hint of a $name", ({ error, includes }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: false,
+          error,
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      const failure = yield* broker
+        .invoke<void>({ scope, operation: "click", input: {} })
+        .pipe(Effect.flip);
+      expect(failure._tag).toBe(error._tag);
+      if (includes === undefined) {
+        expect(failure).not.toHaveProperty("hint");
+        expect(failure).not.toHaveProperty("matchCount");
+        expect(failure).not.toHaveProperty("unmet");
+      } else {
+        expect(failure.message).toContain(includes);
+      }
+    }),
+  ),
+);
+
 it.effect("distinguishes malformed remote failures", () =>
   Effect.scoped(
     Effect.gen(function* () {

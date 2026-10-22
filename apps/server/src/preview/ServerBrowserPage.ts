@@ -6,6 +6,7 @@ import {
   type PreviewAutomationConsoleEntry,
   type PreviewAutomationDragInput,
   type PreviewAutomationEvaluateInput,
+  type PreviewAutomationFailureHint,
   type PreviewAutomationHoverInput,
   type PreviewAutomationNetworkEntry,
   type PreviewAutomationPressInput,
@@ -14,6 +15,7 @@ import {
   type PreviewAutomationSelectResult,
   type PreviewAutomationSnapshot,
   type PreviewAutomationTypeInput,
+  type PreviewAutomationUnmetCondition,
   type PreviewAutomationUploadInput,
   type PreviewAutomationWaitForInput,
 } from "@t3tools/contracts";
@@ -39,6 +41,31 @@ export class ServerBrowserOperationError extends Error {
   }
 }
 
+/**
+ * Playwright's actionability wording, pinned in one table so a Playwright bump that rewords
+ * its call log fails the hint tests instead of silently dropping the recovery advice.
+ */
+const FAILURE_HINT_PATTERNS: ReadonlyArray<readonly [PreviewAutomationFailureHint, RegExp]> = [
+  ["covered", /intercepts pointer events/gi],
+  ["notVisible", /element is not visible/gi],
+  ["notEnabled", /element is not enabled/gi],
+  ["notEditable", /element is not editable/gi],
+  ["notStable", /element is not stable/gi],
+  ["detached", /element is not attached to the dom/gi],
+  ["ambiguous", /strict mode violation/gi],
+];
+
+/** Playwright retries and logs each blocker in turn, so the last one logged is what held the action up. */
+const readFailureHint = (message: string): PreviewAutomationFailureHint | undefined => {
+  let found: { hint: PreviewAutomationFailureHint; at: number } | undefined;
+  for (const [hint, pattern] of FAILURE_HINT_PATTERNS) {
+    for (const match of message.matchAll(pattern)) {
+      if (found === undefined || match.index > found.at) found = { hint, at: match.index };
+    }
+  }
+  return found?.hint;
+};
+
 export const toOperationError = (cause: unknown): ServerBrowserOperationError => {
   if (cause instanceof BrowserControlInterrupted)
     return new ServerBrowserOperationError(
@@ -49,21 +76,83 @@ export const toOperationError = (cause: unknown): ServerBrowserOperationError =>
   if (cause instanceof ServerBrowserOperationError) return cause;
   const message = cause instanceof Error ? cause.message : String(cause);
   const firstLine = message.split("\n")[0] ?? message;
+  // Only the closed hint and a count leave the host: page text in the log never reaches the agent.
+  const hint = readFailureHint(message);
   if (cause instanceof Error && cause.name === "TimeoutError") {
-    return new ServerBrowserOperationError("PreviewAutomationTimeoutError", firstLine);
+    return new ServerBrowserOperationError(
+      "PreviewAutomationTimeoutError",
+      firstLine,
+      hint === undefined ? undefined : { hint },
+    );
   }
-  if (
-    /while parsing selector|Unknown engine|Unexpected token|strict mode violation/i.test(message)
-  ) {
+  if (hint === "ambiguous") {
+    const matchCount = Number(/resolved to (\d+) elements/i.exec(message)?.[1]);
+    return new ServerBrowserOperationError("PreviewAutomationInvalidSelectorError", firstLine, {
+      hint,
+      ...(matchCount >= 1 ? { matchCount } : {}),
+    });
+  }
+  if (/while parsing selector|Unknown engine|Unexpected token/i.test(message)) {
     return new ServerBrowserOperationError("PreviewAutomationInvalidSelectorError", firstLine);
   }
   if (/not an <input>|not editable|not an editable/i.test(message)) {
     return new ServerBrowserOperationError("PreviewAutomationTargetNotEditableError", firstLine);
   }
-  return new ServerBrowserOperationError("PreviewAutomationExecutionError", firstLine);
+  return new ServerBrowserOperationError(
+    "PreviewAutomationExecutionError",
+    firstLine,
+    hint === undefined ? undefined : { hint },
+  );
 };
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+const DEADLINE_MARGIN_MS = 250;
+const POINTER_ANIMATION_MIN_REMAINING_MS = 500;
+
+/**
+ * Time a Playwright step may still use, held back from the request deadline so the failure
+ * reaches the broker before it gives up on the host. Never 0: Playwright reads that as "no timeout".
+ */
+export const remaining = (deadlineMs: number) => {
+  const left = deadlineMs - performance.now();
+  return Math.max(1, left - Math.min(DEADLINE_MARGIN_MS, left / 4));
+};
+
+/** Callers outside a request, such as tests, have no deadline and fall back to the input's own timeout. */
+const deadlineFor = (input: { readonly timeoutMs?: number | undefined }, deadlineMs?: number) =>
+  deadlineMs ?? performance.now() + (input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+
+/**
+ * Ends a tab operation at its request's deadline even when a step has no timeout of its own
+ * (keyboard, wheel, mouse), so the tab's control queue frees and the broker never has to
+ * disconnect the host. The page's script is stopped, but an input event already dispatched
+ * cannot be recalled: the guarantee is that no step starts afterwards, not that it is rolled back.
+ */
+export const withDeadline = async <A>(
+  cdp: CDPSession,
+  limit: { readonly deadlineMs: number; readonly timeoutMs: number; readonly label: string },
+  run: () => Promise<A>,
+): Promise<A> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => {
+        // Stops a busy script; an awaited promise is abandoned and settles unread.
+        void cdp.send("Runtime.terminateExecution").catch(constVoid);
+        reject(
+          new ServerBrowserOperationError(
+            "PreviewAutomationTimeoutError",
+            `${limit.label} did not finish within ${limit.timeoutMs}ms and was stopped.`,
+          ),
+        );
+      },
+      Math.max(0, limit.deadlineMs - performance.now()),
+    );
+  });
+  const work = run();
+  void work.catch(constVoid);
+  return Promise.race([work, expired]).finally(() => clearTimeout(timer));
+};
 
 const pageRefs = new WeakMap<Page, { generation: string; refs: Map<string, string> }>();
 // A compact runtime namespace prevents old refs from aliasing after a server restart.
@@ -128,11 +217,11 @@ const targetPoint = async (
   page: Page,
   locator: Locator | null,
   input: { readonly x?: number | undefined; readonly y?: number | undefined },
-  timeout: number,
+  deadline: number,
 ) => {
   if (locator === null) return { x: input.x ?? 0, y: input.y ?? 0 };
-  await locator.scrollIntoViewIfNeeded({ timeout });
-  const box = await locator.boundingBox({ timeout });
+  await locator.scrollIntoViewIfNeeded({ timeout: remaining(deadline) });
+  const box = await locator.boundingBox({ timeout: remaining(deadline) });
   if (box) return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   const viewport = page.viewportSize();
   return { x: (viewport?.width ?? 0) / 2, y: (viewport?.height ?? 0) / 2 };
@@ -647,16 +736,17 @@ export const click = async (
   page: Page,
   input: PreviewAutomationClickInput,
   pointer: PointerReporter = noPointer,
+  deadlineMs?: number,
 ): Promise<{ readonly x: number; readonly y: number }> => {
-  const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const deadline = deadlineFor(input, deadlineMs);
   const locator = targetLocator(page, input);
-  const point = await targetPoint(page, locator, input, timeout);
-  await pointer(point, "click");
+  const point = await targetPoint(page, locator, input, deadline);
+  if (remaining(deadline) >= POINTER_ANIMATION_MIN_REMAINING_MS) await pointer(point, "click");
   const options = { button: input.button ?? "left", clickCount: input.clickCount ?? 1 } as const;
   const clicked =
     locator === null
       ? page.mouse.click(point.x, point.y, options)
-      : locator.click({ ...options, timeout });
+      : locator.click({ ...options, timeout: remaining(deadline) });
   let onDialog = constVoid;
   const dialogOpened = new Promise<"dialog">((resolve) => {
     onDialog = () => resolve("dialog");
@@ -670,11 +760,11 @@ export const click = async (
   return point;
 };
 
-export const type = async (page: Page, input: PreviewAutomationTypeInput) => {
-  const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+export const type = async (page: Page, input: PreviewAutomationTypeInput, deadlineMs?: number) => {
+  const deadline = deadlineFor(input, deadlineMs);
   const locator = targetLocator(page, input);
   if (locator !== null && input.clear) {
-    await locator.fill(input.text, { timeout });
+    await locator.fill(input.text, { timeout: remaining(deadline) });
     return;
   }
   // A shadow host also matches :focus; use its innermost focused descendant.
@@ -717,7 +807,7 @@ export const type = async (page: Page, input: PreviewAutomationTypeInput) => {
         return active != null && (active === element || element.contains(active));
       },
       undefined,
-      { timeout },
+      { timeout: remaining(deadline) },
     ));
   if (focused !== true) {
     throw new ServerBrowserOperationError(
@@ -736,23 +826,26 @@ export const hover = async (
   page: Page,
   input: PreviewAutomationHoverInput,
   pointer: PointerReporter = noPointer,
+  deadlineMs?: number,
 ) => {
-  const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const deadline = deadlineFor(input, deadlineMs);
   const locator = targetLocator(page, input);
-  await pointer(await targetPoint(page, locator, input, timeout), "move");
+  const point = await targetPoint(page, locator, input, deadline);
+  if (remaining(deadline) >= POINTER_ANIMATION_MIN_REMAINING_MS) await pointer(point, "move");
   if (locator === null) {
     await page.mouse.move(input.x ?? 0, input.y ?? 0);
     return;
   }
-  await locator.hover({ timeout });
+  await locator.hover({ timeout: remaining(deadline) });
 };
 
 export const select = async (
   page: Page,
   input: PreviewAutomationSelectInput,
+  deadlineMs?: number,
 ): Promise<PreviewAutomationSelectResult> => {
   const locator = targetLocator(page, input)!;
-  const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const deadline = deadlineFor(input, deadlineMs);
   const options = await locator.evaluate(
     (element) =>
       element.tagName === "SELECT"
@@ -763,7 +856,7 @@ export const select = async (
           )
         : null,
     undefined,
-    { timeout },
+    { timeout: remaining(deadline) },
   );
   const values =
     options &&
@@ -779,34 +872,43 @@ export const select = async (
       "PreviewAutomationTargetNotEditableError",
       "This element is not a <select>. Click a custom dropdown, then click its option.",
     );
-  return { selected: await locator.selectOption(values, { timeout }) };
+  return { selected: await locator.selectOption(values, { timeout: remaining(deadline) }) };
 };
 
 export const drag = async (
   page: Page,
   input: PreviewAutomationDragInput,
   pointer: PointerReporter = noPointer,
+  deadlineMs?: number,
 ) => {
-  const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const deadline = deadlineFor(input, deadlineMs);
   const source = targetLocator(page, { locator: input.source })!;
   const target = targetLocator(page, { locator: input.target })!;
-  await pointer(await targetPoint(page, source, {}, timeout), "move");
+  const start = await targetPoint(page, source, {}, deadline);
+  if (remaining(deadline) >= POINTER_ANIMATION_MIN_REMAINING_MS) await pointer(start, "move");
   // Observe the drag's outcome as it starts: a rejection nobody handles while the cursor
   // moves exits the server.
-  const dragFailure = source.dragTo(target, { timeout }).then(
+  const dragFailure = source.dragTo(target, { timeout: remaining(deadline) }).then(
     () => null,
     (error: unknown) => ({ error }),
   );
-  const end = await target.boundingBox({ timeout }).catch(() => null);
-  if (end) await pointer({ x: end.x + end.width / 2, y: end.y + end.height / 2 }, "move");
+  const end = await target.boundingBox({ timeout: remaining(deadline) }).catch(() => null);
+  if (end && remaining(deadline) >= POINTER_ANIMATION_MIN_REMAINING_MS)
+    await pointer({ x: end.x + end.width / 2, y: end.y + end.height / 2 }, "move");
   const failure = await dragFailure;
   if (failure) throw failure.error;
 };
 
-export const setInputFiles = async (page: Page, input: PreviewAutomationUploadInput) => {
+export const setInputFiles = async (
+  page: Page,
+  input: PreviewAutomationUploadInput,
+  deadlineMs?: number,
+) => {
   const locator = targetLocator(page, input);
   if (locator === null) return false;
-  await locator.setInputFiles([...input.paths], { timeout: input.timeoutMs ?? DEFAULT_TIMEOUT_MS });
+  await locator.setInputFiles([...input.paths], {
+    timeout: remaining(deadlineFor(input, deadlineMs)),
+  });
   return true;
 };
 
@@ -814,7 +916,11 @@ export const press = async (page: Page, input: PreviewAutomationPressInput) => {
   await page.keyboard.press([...(input.modifiers ?? []), input.key].join("+"));
 };
 
-export const scroll = async (page: Page, input: PreviewAutomationScrollInput) => {
+export const scroll = async (
+  page: Page,
+  input: PreviewAutomationScrollInput,
+  deadlineMs?: number,
+) => {
   const delta = [input.deltaX ?? 0, input.deltaY ?? 0] as const;
   const locator = targetLocator(page, input);
   if (locator === null) {
@@ -822,39 +928,18 @@ export const scroll = async (page: Page, input: PreviewAutomationScrollInput) =>
     await page.evaluate(`scrollBy(${delta[0]}, ${delta[1]})`);
     return;
   }
-  await locator.evaluate((element, [x, y]) => element.scrollBy(x, y), delta);
+  await locator.evaluate((element, [x, y]) => element.scrollBy(x, y), delta, {
+    timeout: remaining(deadlineFor({}, deadlineMs)),
+  });
 };
 
-/**
- * Runs an agent's expression, bounded by its request's deadline. Past it, the
- * page's script is terminated and the call fails, so the tab's control queue
- * frees for the next request instead of waiting on the script.
- */
-export const evaluate = async (
-  cdp: CDPSession,
-  input: PreviewAutomationEvaluateInput,
-  timeoutMs: number,
-) => {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const expired = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      // Stops a busy script; an awaited promise is abandoned and settles unread.
-      void cdp.send("Runtime.terminateExecution").catch(constVoid);
-      reject(
-        new ServerBrowserOperationError(
-          "PreviewAutomationTimeoutError",
-          `Evaluation did not finish within ${timeoutMs}ms and was stopped.`,
-        ),
-      );
-    }, timeoutMs);
-  });
-  const evaluation = cdp.send("Runtime.evaluate", {
+/** Runs an agent's expression; the request's deadline is enforced around it by `withDeadline`. */
+export const evaluate = async (cdp: CDPSession, input: PreviewAutomationEvaluateInput) => {
+  const result = await cdp.send("Runtime.evaluate", {
     expression: input.expression,
     awaitPromise: input.awaitPromise ?? true,
     returnByValue: input.returnByValue ?? true,
   });
-  void evaluation.catch(constVoid);
-  const result = await Promise.race([evaluation, expired]).finally(() => clearTimeout(timer));
   if (result.exceptionDetails) {
     throw new ServerBrowserOperationError(
       "PreviewAutomationExecutionError",
@@ -874,33 +959,51 @@ export const evaluate = async (
   return value;
 };
 
-export const waitFor = async (page: Page, input: PreviewAutomationWaitForInput) => {
+export const waitFor = async (
+  page: Page,
+  input: PreviewAutomationWaitForInput,
+  deadlineMs?: number,
+  // Polled so a human taking control is not queued behind a long wait.
+  control?: { readonly generation: number },
+) => {
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const deadline = Date.now() + timeoutMs;
+  const deadline = deadlineFor(input, deadlineMs);
+  const startGeneration = control?.generation;
+  const hidden = input.state === "hidden";
   const locator = targetLocator(page, input);
   const { text, urlIncludes } = input;
-  const checks: Array<() => Promise<boolean>> = [];
-  if (locator !== null) checks.push(async () => (await locator.count()) > 0);
-  if (text !== undefined) {
-    // A navigation can destroy the context mid-check; that counts as not yet.
-    checks.push(() =>
-      page
-        .evaluate(`(document.body?.innerText ?? "").includes(${JSON.stringify(text)})`)
-        .then((found) => found === true)
-        .catch(() => false),
-    );
+  const checks: Array<readonly [PreviewAutomationUnmetCondition, () => Promise<boolean>]> = [];
+  if (locator !== null) {
+    // A hidden node still exists, so `count()` cannot tell the two apart.
+    checks.push(["locator", async () => (await locator.first().isVisible()) !== hidden]);
   }
-  if (urlIncludes !== undefined) checks.push(async () => page.url().includes(urlIncludes));
+  if (text !== undefined) {
+    // A navigation can destroy the context mid-check; that counts as not yet either way.
+    checks.push([
+      "text",
+      () =>
+        page
+          .evaluate(`(document.body?.innerText ?? "").includes(${JSON.stringify(text)})`)
+          .then((found) => (found === true) !== hidden)
+          .catch(() => false),
+    ]);
+  }
+  if (urlIncludes !== undefined) checks.push(["url", async () => page.url().includes(urlIncludes)]);
   for (;;) {
-    const results = await Promise.all(checks.map((check) => check()));
+    if (control !== undefined && control.generation !== startGeneration) {
+      throw new BrowserControlInterrupted();
+    }
+    const results = await Promise.all(checks.map(([, check]) => check()));
     if (results.every(Boolean)) return;
-    if (Date.now() >= deadline) {
+    const left = deadline - performance.now();
+    if (left <= 0) {
       throw new ServerBrowserOperationError(
         "PreviewAutomationTimeoutError",
         `Waited ${timeoutMs}ms without every condition holding.`,
+        { unmet: checks.flatMap(([kind], index) => (results[index] ? [] : [kind])) },
       );
     }
-    await new Promise((resolve) => setTimeout(resolve, WAIT_POLL_MS));
+    await new Promise((resolve) => setTimeout(resolve, Math.min(WAIT_POLL_MS, left)));
   }
 };
 

@@ -178,6 +178,7 @@ function makeContext(onClose?: (context: BrowserContext) => void) {
       visibleText: "delete",
       interactiveElements: [],
     })),
+    keyboard: { press: vi.fn(async (_key: string) => {}) },
     ariaSnapshot: vi.fn(async () => '- button "delete" [ref=e1]'),
     locator: vi.fn(() => {
       throw new Error("Unexpected locator action");
@@ -1067,6 +1068,36 @@ it.live("agents read a human's tab with no arguments and act on it only while no
       expect(retaken).toMatchObject({ reason: "humanControl" });
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.live(
+  "a keyboard action that never settles fails at the deadline and frees the tab's queue",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, tabId } = yield* ready;
+        // Playwright's keyboard has no timeout of its own, so only the request deadline can end this.
+        contexts[0]!.page.keyboard.press.mockImplementationOnce(() => new Promise<void>(() => {}));
+        const failed = yield* broker
+          .invoke<void>({
+            scope,
+            tabId,
+            operation: "press",
+            input: { key: "Enter" },
+            timeoutMs: 50,
+          })
+          .pipe(Effect.flip);
+        expect(failed._tag).toBe("PreviewAutomationTimeoutError");
+        expect(
+          yield* broker.invoke({
+            scope,
+            tabId,
+            operation: "evaluate",
+            input: { expression: "next()" },
+          }),
+        ).toBe("evaluated");
+      }),
+    ).pipe(Effect.provide(layer)),
 );
 
 it.live("a session's own tab stays its default while other sessions' tabs are listed", () =>

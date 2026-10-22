@@ -121,6 +121,14 @@ const EDITABLE_AT_POINT_SCRIPT = `(x, y) => {
 }`;
 const UNATTACHED_FILL_VIEWPORT = { width: 1280, height: 800 } as const;
 const NAVIGATION_TIMEOUT_MS = 15_000;
+const WAIT_BACKSTOP_MS = 250;
+const SELF_BOUNDED_OPERATIONS: ReadonlySet<PreviewAutomationRequest["operation"]> = new Set([
+  "navigate",
+  "resize",
+  "setColorScheme",
+  "snapshot",
+  "recordingStart",
+]);
 const VIEWER_NAVIGATION_OPTIONS = { waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS } as const;
 const ACTION_TIMELINE_LIMIT = 50;
 
@@ -1068,14 +1076,18 @@ const make = Effect.gen(function* () {
     if (tab.fileChooser === open) closeFileChooser(tab);
     return true;
   };
-  const uploadFiles = async (tab: ServerTab, input: PreviewAutomationUploadInput) => {
+  const uploadFiles = async (
+    tab: ServerTab,
+    input: PreviewAutomationUploadInput,
+    deadlineMs: number,
+  ) => {
     const relative = input.paths.find((path) => !NodePath.isAbsolute(path));
     if (relative !== undefined)
       throw new ServerBrowserPage.ServerBrowserOperationError(
         "PreviewAutomationExecutionError",
         `Upload paths must be absolute: ${relative}`,
       );
-    if (await ServerBrowserPage.setInputFiles(tab.page, input)) return undefined;
+    if (await ServerBrowserPage.setInputFiles(tab.page, input, deadlineMs)) return undefined;
     const open = tab.fileChooser;
     if (!open)
       throw new ServerBrowserPage.ServerBrowserOperationError(
@@ -1089,7 +1101,7 @@ const make = Effect.gen(function* () {
       );
     if (input.paths.length > 0)
       await open.chooser.setFiles([...input.paths], {
-        timeout: input.timeoutMs ?? NAVIGATION_TIMEOUT_MS,
+        timeout: ServerBrowserPage.remaining(deadlineMs),
       });
     if (tab.fileChooser === open) closeFileChooser(tab);
     return undefined;
@@ -1906,7 +1918,7 @@ const make = Effect.gen(function* () {
             "A browser dialog is pending. Read preview_status.",
             "dialogPending",
           );
-        return executeTabOperation(tab, request);
+        return executeTabOperation(tab, request, deadlineMs);
       });
     }
     return tab.control.agent(
@@ -1921,7 +1933,7 @@ const make = Effect.gen(function* () {
         tab.agentOperating = !READ_OPERATIONS.has(request.operation);
         updateFileChooserInterception(tab);
         try {
-          return await executeTabOperation(tab, request);
+          return await executeTabOperation(tab, request, deadlineMs, tab.control);
         } finally {
           tab.agentOperating = false;
           updateFileChooserInterception(tab);
@@ -1932,7 +1944,35 @@ const make = Effect.gen(function* () {
     );
   };
 
-  const executeTabOperation = async (tab: ServerTab, request: PreviewAutomationRequest) => {
+  const executeTabOperation = (
+    tab: ServerTab,
+    request: PreviewAutomationRequest,
+    deadlineMs: number,
+    interruptedBy?: { readonly generation: number },
+  ) =>
+    // Navigation, snapshots and recordings end on timeouts of their own that say more than a
+    // generic expiry would.
+    SELF_BOUNDED_OPERATIONS.has(request.operation)
+      ? runTabOperation(tab, request, deadlineMs, interruptedBy)
+      : ServerBrowserPage.withDeadline(
+          tab.cdp,
+          {
+            // A wait ends itself with a message naming what it waited for; this is its backstop.
+            deadlineMs:
+              request.operation === "waitFor" ? deadlineMs + WAIT_BACKSTOP_MS : deadlineMs,
+            timeoutMs: request.timeoutMs,
+            label:
+              request.operation === "evaluate" ? "Evaluation" : `The ${request.operation} action`,
+          },
+          () => runTabOperation(tab, request, deadlineMs, interruptedBy),
+        );
+
+  const runTabOperation = async (
+    tab: ServerTab,
+    request: PreviewAutomationRequest,
+    deadlineMs: number,
+    interruptedBy?: { readonly generation: number },
+  ) => {
     const input = request.input;
     switch (request.operation) {
       case "navigate": {
@@ -1978,29 +2018,39 @@ const make = Effect.gen(function* () {
       case "click": {
         const clickInput = input as PreviewAutomationClickInput;
         await recordAction(tab, "click", () =>
-          ServerBrowserPage.click(tab.page, clickInput, pointerFor(tab)),
+          ServerBrowserPage.click(tab.page, clickInput, pointerFor(tab), deadlineMs),
         );
         return undefined;
       }
       case "hover":
         return recordAction(tab, "hover", () =>
-          ServerBrowserPage.hover(tab.page, input as PreviewAutomationHoverInput, pointerFor(tab)),
+          ServerBrowserPage.hover(
+            tab.page,
+            input as PreviewAutomationHoverInput,
+            pointerFor(tab),
+            deadlineMs,
+          ),
         );
       case "select":
         return recordAction(tab, "select", () =>
-          ServerBrowserPage.select(tab.page, input as PreviewAutomationSelectInput),
+          ServerBrowserPage.select(tab.page, input as PreviewAutomationSelectInput, deadlineMs),
         );
       case "drag":
         return recordAction(tab, "drag", () =>
-          ServerBrowserPage.drag(tab.page, input as PreviewAutomationDragInput, pointerFor(tab)),
+          ServerBrowserPage.drag(
+            tab.page,
+            input as PreviewAutomationDragInput,
+            pointerFor(tab),
+            deadlineMs,
+          ),
         );
       case "upload":
         return recordAction(tab, "upload", () =>
-          uploadFiles(tab, input as PreviewAutomationUploadInput),
+          uploadFiles(tab, input as PreviewAutomationUploadInput, deadlineMs),
         );
       case "type":
         return recordAction(tab, "type", () =>
-          ServerBrowserPage.type(tab.page, input as PreviewAutomationTypeInput),
+          ServerBrowserPage.type(tab.page, input as PreviewAutomationTypeInput, deadlineMs),
         );
       case "press":
         return recordAction(tab, "press", () =>
@@ -2008,16 +2058,17 @@ const make = Effect.gen(function* () {
         );
       case "scroll":
         return recordAction(tab, "scroll", () =>
-          ServerBrowserPage.scroll(tab.page, input as PreviewAutomationScrollInput),
+          ServerBrowserPage.scroll(tab.page, input as PreviewAutomationScrollInput, deadlineMs),
         );
       case "evaluate":
-        return ServerBrowserPage.evaluate(
-          tab.cdp,
-          input as PreviewAutomationEvaluateInput,
-          request.timeoutMs,
-        );
+        return ServerBrowserPage.evaluate(tab.cdp, input as PreviewAutomationEvaluateInput);
       case "waitFor":
-        return ServerBrowserPage.waitFor(tab.page, input as PreviewAutomationWaitForInput);
+        return ServerBrowserPage.waitFor(
+          tab.page,
+          input as PreviewAutomationWaitForInput,
+          deadlineMs,
+          interruptedBy,
+        );
       case "recordingStart": {
         const recording = await startRecording(tab);
         return { tabId: tab.tabId, recording: true, startedAt: recording.startedAt };

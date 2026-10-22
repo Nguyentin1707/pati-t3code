@@ -4,6 +4,8 @@ import {
   PreviewAutomationControlInterruptedError,
   PreviewAutomationControlReason,
   PreviewAutomationExecutionError,
+  PreviewAutomationFailureHint,
+  PreviewAutomationUnmetCondition,
   SERVER_BROWSER_AUTOMATION_CLIENT_ID,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationMalformedResponseError,
@@ -207,6 +209,32 @@ function remoteDetailKind(detail: unknown): RemoteDetailKind {
 
 const MAX_REASON_CHARS = 500;
 
+const decodeFailureHint = Schema.decodeUnknownOption(PreviewAutomationFailureHint);
+const decodeMatchCount = Schema.decodeUnknownOption(
+  Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+);
+const decodeUnmet = Schema.decodeUnknownOption(Schema.Array(PreviewAutomationUnmetCondition));
+
+const readDetailField = (detail: unknown, key: string): unknown =>
+  typeof detail === "object" && detail !== null && key in detail
+    ? (detail as Record<string, unknown>)[key]
+    : undefined;
+
+/** Hosts may be older or newer than this server, so each field is decoded alone and unknown values are dropped. */
+const readFailureHint = (detail: unknown) => {
+  const hint = decodeFailureHint(readDetailField(detail, "hint"));
+  const matchCount = decodeMatchCount(readDetailField(detail, "matchCount"));
+  return {
+    ...(Option.isSome(hint) ? { hint: hint.value } : {}),
+    ...(Option.isSome(matchCount) ? { matchCount: matchCount.value } : {}),
+  };
+};
+
+const readUnmet = (detail: unknown) => {
+  const unmet = decodeUnmet(readDetailField(detail, "unmet"));
+  return Option.isSome(unmet) ? { unmet: unmet.value } : {};
+};
+
 const classifyResponseError = (
   context: PreviewAutomationRequestErrorContext,
   error: NonNullable<PreviewAutomationResponse["error"]>,
@@ -257,6 +285,8 @@ const classifyResponseError = (
       return new PreviewAutomationTimeoutError({
         ...context,
         ...remoteDiagnostics,
+        ...readFailureHint(error.detail),
+        ...readUnmet(error.detail),
       });
     case "PreviewAutomationControlInterruptedError": {
       const reason = decodeControlReason(error.detail);
@@ -276,6 +306,7 @@ const classifyResponseError = (
         ...context,
         ...remoteDiagnostics,
         ...(staleRef ? { staleRef } : {}),
+        ...readFailureHint(error.detail),
       });
     }
     case "PreviewAutomationTargetNotEditableError": {
@@ -334,6 +365,7 @@ const classifyResponseError = (
       return new PreviewAutomationExecutionError({
         ...context,
         ...remoteDiagnostics,
+        ...readFailureHint(error.detail),
         ...(context.clientId === SERVER_BROWSER_AUTOMATION_CLIENT_ID
           ? { reason: error.message.slice(0, MAX_REASON_CHARS) }
           : {}),
