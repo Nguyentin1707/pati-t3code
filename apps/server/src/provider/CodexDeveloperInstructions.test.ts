@@ -3,6 +3,7 @@ import * as NodeAssert from "node:assert/strict";
 import {
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
   T3_CODE_ORCHESTRATION_SECTIONS,
+  t3ToolInstructions,
 } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { describe, it } from "vite-plus/test";
 
@@ -57,6 +58,40 @@ describe("buildCodexAdditionalContext", () => {
       sections.map((entry) => entry.value).join("\n\n"),
       T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim(),
     );
+  });
+});
+
+describe("Codex tool instructions", () => {
+  const toolsEntry = (availability: Parameters<typeof buildCodexAdditionalContext>[1]) =>
+    buildCodexAdditionalContext({ model: "gpt-5.3-codex" }, availability).t3_code_tools?.value;
+
+  it("adds each tool section only for the capability the turn has", () => {
+    NodeAssert.equal(toolsEntry({ browser: false, device: false }), undefined);
+    NodeAssert.match(
+      toolsEntry({ browser: true, device: false }) ?? "",
+      /T3 Code collaborative browser/,
+    );
+    NodeAssert.doesNotMatch(toolsEntry({ browser: true, device: false }) ?? "", /T3 Code devices/);
+    NodeAssert.match(toolsEntry({ browser: false, device: true }) ?? "", /^## T3 Code devices/);
+    NodeAssert.doesNotMatch(
+      toolsEntry({ browser: false, device: true }) ?? "",
+      /collaborative browser/,
+    );
+    NodeAssert.equal(
+      toolsEntry({ browser: true, device: true }),
+      [
+        t3ToolInstructions({ browser: true, device: false }),
+        t3ToolInstructions({ browser: false, device: true }),
+      ].join("\n\n"),
+    );
+  });
+
+  it("tells the agent how to read action results, wait for hidden, and follow error hints", () => {
+    const browser = toolsEntry(true) ?? "";
+    NodeAssert.match(browser, /`page`/);
+    NodeAssert.match(browser, /`openedTabs`/);
+    NodeAssert.match(browser, /state: "hidden"/);
+    NodeAssert.match(browser, /error names the cause and the next step/);
   });
 });
 

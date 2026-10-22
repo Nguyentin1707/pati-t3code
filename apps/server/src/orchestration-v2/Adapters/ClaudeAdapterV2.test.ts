@@ -571,6 +571,31 @@ describe("ClaudeAdapterV2 native protocol logging", () => {
   });
 });
 
+describe("ClaudeAdapterV2 browser instructions", () => {
+  const appendFor = (browserToolsAvailable: boolean | undefined) => {
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-sonnet-4-6",
+      },
+      nativeThreadId: "native-thread-claude-browser",
+      resume: false,
+      cwd: "/workspace",
+      mcpServers: {},
+      ...(browserToolsAvailable === undefined ? {} : { browserToolsAvailable }),
+      environment: {},
+    });
+    return (options.systemPrompt as { readonly append?: string }).append ?? "";
+  };
+
+  it("describes the browser tools only when the session has the preview capability", () => {
+    assert.include(appendFor(true), "T3 Code collaborative browser");
+    assert.notInclude(appendFor(false), "T3 Code collaborative browser");
+    assert.notInclude(appendFor(undefined), "T3 Code collaborative browser");
+    assert.include(appendFor(false), "Use `delegate_task`");
+  });
+});
+
 describe("ClaudeAdapterV2 context usage", () => {
   it("dates cache expiry from the request start, not the response end", () => {
     const usage = ClaudeAdapterV2.claudeProviderTurnTokenUsage(
