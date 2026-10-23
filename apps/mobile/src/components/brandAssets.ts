@@ -8,3 +8,5 @@ export const T3_CODE_BRAND_MARK_SOURCE =
     : appVariant === "preview"
       ? require("../../../../assets/nightly/nightly-ios-1024.png")
       : require("../../../../assets/prod/black-ios-1024.png");
+
+export const PATI_MARK_SOURCE = require("../../assets/pati-mark.png");

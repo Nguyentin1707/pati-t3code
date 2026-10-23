@@ -6,7 +6,7 @@ The three Icon Composer projects are the source of truth for full application ic
 - `nightly/app-icon.icon`
 - `prod/app-icon.icon`
 
-Each project uses `text.svg` for the T3 mark and `background.svg` when the background is a vector layer. Additional layers use semantic names that describe their role and placement.
+All three channels use the raster PATI logo as their only layer, `Assets/pati-logo.png`. The older `text.svg`, `background.svg`, and decoration layers are no longer referenced by `icon.json` and remain only as inputs to the Android export below.
 
 Run `vp run icons:export` from the repository root to regenerate the tracked iOS, Linux, Windows, and web assets. The development web exports are also copied to `apps/web/public` for the browser favicon and splash screen. Run `vp run icons:check` to verify that the generated assets and public copies match their sources without changing files.
 
@@ -47,7 +47,7 @@ Do not resize, composite, or otherwise post-process the exported PNGs.
 Verify every result is 1024×1024 and has the classic macOS safe area: an 824×824 opaque body inset 100px on every side, with only Icon Composer's native shadow extending beyond it.
 ```
 
-Do not edit the generated PNG or ICO files directly.
+Do not edit the generated PNG or ICO files directly. The PATI rasters in this branch were generated from the 1254px source logo outside Icon Composer, so run `vp run icons:export` on a Mac once to bring them back in line with the projects. The favicons and `apps/web/src/assets/pati-mark.png` use a circular crop of the pug's head because the full logo's text is unreadable at those sizes.
 
 ## Android launcher and splash artwork
 
@@ -63,5 +63,8 @@ is instead rendered from the same Icon Composer SVG sources by `vp run icons:exp
 - `apps/mobile/assets/android-splash-icon-*.png`: the two layers composed into one 288dp image, so
   the splash mask reproduces the launcher icon's framing.
 
-Rerun the export after changing a layer SVG. `android-icon-mark.png` remains a flat silhouette for
-Android's monochrome themed icon.
+The PATI Android foreground and splash images were rendered from the PATI logo instead, on a white
+adaptive background. `vp run icons:export:android` still draws the old T3 wordmark and would
+overwrite them, so do not rerun it until it renders the PATI logo. `android-icon-mark.png` and
+`android-notification-icon.png` are still the T3 silhouette, since Android's monochrome themed and
+notification icons need a flat shape that the PATI logo does not provide.

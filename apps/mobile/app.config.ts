@@ -35,8 +35,8 @@ const DEVELOPMENT_ASSETS = {
   iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.developmentIconComposerProject),
   splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.developmentIosIconPng),
   androidAdaptiveForeground,
-  androidAdaptiveBackgroundColor: "#347FF8",
-  androidAdaptiveBackgroundImage: "./assets/android-icon-background-dev.png",
+  androidAdaptiveBackgroundColor: "#FFFFFF",
+  androidAdaptiveBackgroundImage: undefined,
   androidSplashIcon: "./assets/android-splash-icon-dev.png",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
   androidNotificationIcon: "./assets/android-notification-icon.png",
@@ -48,8 +48,8 @@ const PREVIEW_ASSETS = {
   iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIconComposerProject),
   splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIosIconPng),
   androidAdaptiveForeground,
-  androidAdaptiveBackgroundColor: "#111533",
-  androidAdaptiveBackgroundImage: "./assets/android-icon-background-nightly.png",
+  androidAdaptiveBackgroundColor: "#FFFFFF",
+  androidAdaptiveBackgroundImage: undefined,
   androidSplashIcon: "./assets/android-splash-icon-nightly.png",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
   androidNotificationIcon: "./assets/android-notification-icon.png",
@@ -61,7 +61,7 @@ const RELEASE_ASSETS = {
   iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIconComposerProject),
   splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIosIconPng),
   androidAdaptiveForeground,
-  androidAdaptiveBackgroundColor: "#000000",
+  androidAdaptiveBackgroundColor: "#FFFFFF",
   androidAdaptiveBackgroundImage: undefined,
   androidSplashIcon: "./assets/android-splash-icon-prod.png",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
@@ -71,7 +71,7 @@ const RELEASE_ASSETS = {
 
 const VARIANT_CONFIG = {
   development: {
-    appName: "T3 Code Dev",
+    appName: "T3 Code by PATI Dev",
     scheme: "t3code-dev",
     iosBundleIdentifier: "com.t3tools.t3code.dev",
     androidPackage: "com.t3tools.t3code.dev",
@@ -79,7 +79,7 @@ const VARIANT_CONFIG = {
     assets: DEVELOPMENT_ASSETS,
   },
   preview: {
-    appName: "T3 Code Preview",
+    appName: "T3 Code by PATI Preview",
     scheme: "t3code-preview",
     iosBundleIdentifier: "com.t3tools.t3code.preview",
     androidPackage: "com.t3tools.t3code.preview",
@@ -87,7 +87,7 @@ const VARIANT_CONFIG = {
     assets: PREVIEW_ASSETS,
   },
   production: {
-    appName: "T3 Code",
+    appName: "T3 Code by PATI",
     scheme: "t3code",
     iosBundleIdentifier: "com.t3tools.t3code",
     androidPackage: "com.t3tools.t3code",
