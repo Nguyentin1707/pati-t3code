@@ -1942,9 +1942,9 @@
       --color-card-alt: #f4f5f7;
       --color-card-translucent: rgba(255, 255, 255, 0.8);
       --color-thread-canvas: #f4f5f7;
-      --color-thread-selected: #edeff9;
+      --color-thread-selected: #dbe0f3;
       --color-thread-selected-foreground: #1f1f1f;
-      --color-thread-selected-foreground-muted: #646979;
+      --color-thread-selected-foreground-muted: #5c6172;
       --color-thread-hover: #eef1f6;
       --color-row-hover: #eef1f6;
       --color-composer-panel: rgba(244, 245, 247, 0.88);
@@ -2017,7 +2017,7 @@
       --color-backdrop: rgba(0, 0, 0, 0.22);
       --color-drawer: #ffffff;
       --color-drawer-foreground: #1f1f1f;
-      --color-drawer-foreground-muted: #646979;
+      --color-drawer-foreground-muted: #5c6172;
       --color-drawer-border: #e2e4e8;
       --color-drawer-shadow: rgba(0, 0, 0, 0.12);
       --color-dot-separator: rgba(100, 105, 121, 0.35);
