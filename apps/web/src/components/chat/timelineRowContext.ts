@@ -47,10 +47,7 @@ export interface TimelineRowSharedState {
     readonly sourceThreadId: ThreadId;
     readonly runId: RunId;
   }) => Promise<void>;
-  onRollbackCheckpoint: (input: {
-    readonly checkpointId: string;
-    readonly scopeId: string;
-  }) => void;
+  onRollbackCheckpoint: (input: CheckpointRollbackRequest) => void;
   onToggleTurnFold: (runId: RunId) => void;
   onToggleAttemptFold: (attemptId: RunAttemptId) => void;
   onFileOpen: (attachment: ChatFileAttachment) => void;
@@ -66,12 +63,22 @@ export interface TimelineRowSharedState {
   workGroupViewState: WorkGroupViewState;
 }
 
+export interface CheckpointRollbackRequest {
+  readonly checkpointId: string;
+  readonly scopeId: string;
+  /** The run the checkpoint belongs to, so the confirm dialog can offer a fork instead. */
+  readonly forkFrom: { readonly sourceThreadId: ThreadId; readonly runId: RunId } | null;
+}
+
+/** What a blocked turn is waiting for; null while the agent is not waiting on the user. */
+export type AwaitingUserKind = "approval" | "input";
+
 export interface TimelineRowActivityState {
   isWorking: boolean;
   isCompacting: boolean;
   isRevertingCheckpoint: boolean;
   activeTurnInProgress: boolean;
-  awaitingUser: boolean;
+  awaitingUser: AwaitingUserKind | null;
   isPreparingWorktree: boolean;
   latestRunId: RunId | null;
   backgroundWorktreeSetup: WorktreeSetupSnapshot | null;

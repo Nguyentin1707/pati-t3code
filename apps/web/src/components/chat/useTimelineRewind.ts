@@ -32,6 +32,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { rewindToMessage } from "./chatViewSend";
+import type { CheckpointRollbackRequest } from "./timelineRowContext";
 import { makeThreadErrorSetter } from "../ChatView.logic";
 interface TimelineRewindInput {
   readonly environmentId: EnvironmentId;
@@ -129,7 +130,7 @@ export function useTimelineRewind(input: TimelineRewindInput) {
       return;
     }
     if (restoreFiles === undefined) {
-      openRevertConfirm(routeThreadKey, { turnCount, messageId });
+      openRevertConfirm(routeThreadKey, { kind: "edit", turnCount, messageId });
       return;
     }
 
@@ -175,57 +176,6 @@ export function useTimelineRewind(input: TimelineRewindInput) {
   };
   const onConfirmRevertStable = useStableCallback(onConfirmRevert);
 
-  const onRollbackCheckpoint = async (input: {
-    readonly checkpointId: string;
-    readonly scopeId: string;
-  }) => {
-    if (!activeThread || isRevertingCheckpoint) return;
-    if (activeEnvironmentUnavailable && activeEnvironmentUnavailableLabel) {
-      setThreadError(
-        activeThread.id,
-        `Reconnect ${activeEnvironmentUnavailableLabel} before reverting checkpoints.`,
-      );
-      return;
-    }
-    if (phase === "running" || isSendBusy || isConnecting) {
-      setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
-      return;
-    }
-    const localApi = readLocalApi();
-    const confirmed =
-      localApi == null
-        ? window.confirm("Roll back this thread to the selected checkpoint?")
-        : await localApi.dialogs.confirm(
-            "Roll back this thread to the selected checkpoint?\nThis action cannot be undone.",
-          );
-    if (!confirmed) return;
-
-    useComposerDraftStore.setState((store) => ({
-      rewindingThreadKeys: new Set(store.rewindingThreadKeys).add(routeThreadKey),
-    }));
-    setThreadError(activeThread.id, null);
-    const result = await revertThreadCheckpoint({
-      environmentId,
-      input: {
-        threadId: activeThread.id,
-        checkpointId: input.checkpointId,
-        scopeId: input.scopeId,
-      },
-    });
-    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-      const error = squashAtomCommandFailure(result);
-      setThreadError(
-        activeThread.id,
-        error instanceof Error ? error.message : "Failed to revert thread state.",
-      );
-    }
-    useComposerDraftStore.setState((store) => {
-      const remaining = new Set(store.rewindingThreadKeys);
-      remaining.delete(routeThreadKey);
-      return { rewindingThreadKeys: remaining };
-    });
-  };
-
   const onForkFromRun = async (input: {
     readonly sourceThreadId: ThreadId;
     readonly runId: RunId;
@@ -266,11 +216,59 @@ export function useTimelineRewind(input: TimelineRewindInput) {
     });
   };
   const onForkFromRunStable = useStableCallback(onForkFromRun);
-  const onTimelineRollbackCheckpoint = (input: {
-    readonly checkpointId: string;
-    readonly scopeId: string;
-  }) => {
-    if (!paintOnlyDisplayedTimeline) void onRollbackCheckpoint(input);
+
+  const rollbackCheckpoint = async (input: CheckpointRollbackRequest) => {
+    if (!activeThread) return;
+    useComposerDraftStore.setState((store) => ({
+      rewindingThreadKeys: new Set(store.rewindingThreadKeys).add(routeThreadKey),
+    }));
+    setThreadError(activeThread.id, null);
+    const result = await revertThreadCheckpoint({
+      environmentId,
+      input: {
+        threadId: activeThread.id,
+        checkpointId: input.checkpointId,
+        scopeId: input.scopeId,
+      },
+    });
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      const error = squashAtomCommandFailure(result);
+      setThreadError(
+        activeThread.id,
+        error instanceof Error ? error.message : "Failed to revert thread state.",
+      );
+    }
+    useComposerDraftStore.setState((store) => {
+      const remaining = new Set(store.rewindingThreadKeys);
+      remaining.delete(routeThreadKey);
+      return { rewindingThreadKeys: remaining };
+    });
+  };
+  const rollbackCheckpointStable = useStableCallback(rollbackCheckpoint);
+
+  const onRollbackCheckpoint = (input: CheckpointRollbackRequest) => {
+    if (!activeThread || isRevertingCheckpoint) return;
+    if (activeEnvironmentUnavailable && activeEnvironmentUnavailableLabel) {
+      setThreadError(
+        activeThread.id,
+        `Reconnect ${activeEnvironmentUnavailableLabel} before reverting checkpoints.`,
+      );
+      return;
+    }
+    if (phase === "running" || isSendBusy || isConnecting) {
+      setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
+      return;
+    }
+    const { forkFrom } = input;
+    openRevertConfirm(routeThreadKey, {
+      kind: "checkpoint",
+      onRollback: () => void rollbackCheckpointStable(input),
+      onFork: forkFrom ? () => void onForkFromRunStable(forkFrom) : null,
+    });
+  };
+
+  const onTimelineRollbackCheckpoint = (input: CheckpointRollbackRequest) => {
+    if (!paintOnlyDisplayedTimeline) onRollbackCheckpoint(input);
   };
   const onTimelineRollbackCheckpointStable = useStableCallback(onTimelineRollbackCheckpoint);
   const onRevertTimelineTurn = (targetTurnCount: number, messageId: MessageId) => {

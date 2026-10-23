@@ -284,13 +284,20 @@ function ExpandedWorkGroupEntries({
 const workEntryKey = (entry: TimelineWorkEntry) => entry.id;
 
 export function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
-  const { isCompacting, isPreparingWorktree, backgroundWorktreeSetup } =
+  const { isCompacting, isPreparingWorktree, backgroundWorktreeSetup, awaitingUser } =
     use(TimelineRowActivityCtx);
   const shimmer = isPreparingWorktree || isCompacting;
+  // Blocked on the user, the turn clock is not "work", so it must not tick.
   const label = isPreparingWorktree ? (
     "Setting up worktree…"
   ) : isCompacting ? (
     <CompactingLabel />
+  ) : awaitingUser ? (
+    awaitingUser === "approval" ? (
+      "Waiting for your approval"
+    ) : (
+      "Waiting for your answer"
+    )
   ) : row.createdAt ? (
     <>
       Working for <WorkingTimer createdAt={row.createdAt} />
@@ -361,10 +368,15 @@ function CompactingLabel() {
 
 export function ThinkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "thinking" }> }) {
   const ctx = use(TimelineRowCtx);
-  const { isCompacting, isPreparingWorktree } = use(TimelineRowActivityCtx);
-  if (isPreparingWorktree || isCompacting) return <WorkLogRow label="" />;
-  const activity = <LiveActivityRow label="Thinking" iconName="brain" active shimmer />;
+  const { isCompacting, isPreparingWorktree, awaitingUser } = use(TimelineRowActivityCtx);
   const { groupId } = row;
+  // The working row already says what the turn is waiting for; "Thinking" would contradict it.
+  if (isPreparingWorktree || isCompacting || (awaitingUser !== null && groupId === undefined)) {
+    return <WorkLogRow label="" />;
+  }
+  const activity = (
+    <LiveActivityRow label="Thinking" iconName="brain" active={awaitingUser === null} shimmer />
+  );
   if (groupId === undefined) return activity;
   return (
     <button
@@ -488,6 +500,7 @@ export function LiveWorkEntryTimelineRow({
   row: Extract<TimelineRow, { kind: "work-live" }>;
 }) {
   const ctx = use(TimelineRowCtx);
+  const { awaitingUser } = use(TimelineRowActivityCtx);
   const threadTarget = useThreadReadTarget(row.entry, ctx.activeThreadEnvironmentId);
   const questionHeading = row.entry.questionAnswer
     ? getQuestionTextPreview(row.entry.questionAnswer)
@@ -576,7 +589,7 @@ export function LiveWorkEntryTimelineRow({
         iconName={workEntryIconName(row.entry)}
         toolIcon={row.entry.toolIcon ?? row.entry.toolSource?.icon}
         failed={failed}
-        active={row.active}
+        active={row.active && awaitingUser === null}
       />
     </button>
   );

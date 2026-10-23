@@ -272,7 +272,7 @@ export function McpAppTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "
         revision={row.revision}
         app={row.mcpApp}
         onSendMessage={ctx.onSendAppMessage}
-        awaitingUser={awaitingUser}
+        awaitingUser={awaitingUser !== null}
         onFullscreenChange={(fullscreen) => ctx.onAppFullscreenChange(row.id, fullscreen)}
       />
     </div>
