@@ -1211,6 +1211,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     showSkillsInSlashMenu: settings.showSkillsInSlashMenu,
   });
 
+  const providerCommandsUnavailableLabel =
+    selectedProviderEntry?.enabled &&
+    (selectedProviderEntry.status === "error" || !selectedProviderEntry.installed)
+      ? selectedProviderEntry.displayName
+      : null;
+
   const composerMenuOpen = Boolean(composerTrigger);
   const composerMenuSearchKey = composerTrigger
     ? `${composerSuggestionListId}:${composerTrigger.kind}:${composerTrigger.query.trim().toLowerCase()}`
@@ -3721,6 +3727,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     isLoading={isComposerMenuLoading}
                     triggerKind={composerTriggerKind}
                     emptyStateText={composerMenuEmptyState}
+                    providerUnavailableLabel={providerCommandsUnavailableLabel}
                     activeItemId={activeComposerMenuItem?.id ?? null}
                     onHighlightedItemChange={onComposerMenuItemHighlightedStable}
                     onSelect={onSelectComposerItemStable}

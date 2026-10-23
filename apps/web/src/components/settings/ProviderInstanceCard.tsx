@@ -8,6 +8,7 @@ import {
   DownloadIcon,
   ExternalLinkIcon,
   LayersIcon,
+  PencilIcon,
   PlusIcon,
   Trash2Icon,
   XIcon,
@@ -836,6 +837,21 @@ export function ProviderInstanceCard({
     ) : null;
   const needsAttention = statusKey === "warning" || statusKey === "error";
   const statusDiagnostic = hasCompatibilityWarning && needsAttention ? summary.detail : null;
+  // The Runtime fold stays closed for managed Codex, so only offer the jump when the input is on screen.
+  const hasBinaryPathField =
+    driverOption !== undefined &&
+    deriveProviderSettingsFields(driverOption, instance.config).some(
+      (field) => field.key === "binaryPath",
+    ) &&
+    !(instance.driver === "codex" && readCodexSetupMode(instance.config) === "managed");
+  const editBinaryPathAction =
+    needsAttention && !liveProvider?.installed && hasBinaryPathField
+      ? () => {
+          const input = document.getElementById(`provider-instance-${instanceId}-binaryPath`);
+          input?.scrollIntoView({ block: "center" });
+          input?.focus();
+        }
+      : null;
   const inlineStatusDetail = hasCompatibilityWarning
     ? compatibility?.status === "broken"
       ? "Incompatible"
@@ -1112,7 +1128,7 @@ export function ProviderInstanceCard({
     <>
       <SettingsSection title={displayName} icon={titleIconNode} headerAction={editorHeaderAction}>
         <SettingsRow
-          title="Display name"
+          title="Status"
           status={
             <>
               <ProviderStatusDiagnostic detail={statusDiagnostic}>
@@ -1148,6 +1164,23 @@ export function ProviderInstanceCard({
               ) : null}
             </>
           }
+          control={
+            editBinaryPathAction ? (
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                disabled={readOnly}
+                onClick={editBinaryPathAction}
+              >
+                <PencilIcon />
+                Edit binary path
+              </Button>
+            ) : undefined
+          }
+        />
+        <SettingsRow
+          title="Display name"
           control={
             <div
               inert={readOnly}

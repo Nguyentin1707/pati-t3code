@@ -33,7 +33,7 @@ import {
   matchesPullRequestQuery,
   rankPullRequestMatches,
 } from "../pullRequest/pullRequestList.logic";
-import type { ComposerCommandItem } from "./ComposerCommandMenu";
+import { orderComposerCommandItemsByGroup, type ComposerCommandItem } from "./ComposerCommandMenu";
 import {
   searchSlashCommandItems,
   slashCommandItemsForPromptPosition,
@@ -236,7 +236,7 @@ export function useComposerMenuItems({
         [...builtInSlashCommandItems, ...visibleProviderSlashCommandItems, ...skillItems],
         composerTrigger.rangeStart === 0,
       );
-      return searchSlashCommandItems(slashCommandItems, query);
+      return orderComposerCommandItemsByGroup(searchSlashCommandItems(slashCommandItems, query));
     }
     if (composerTrigger.kind === "skill") {
       return searchProviderSkills(selectedProviderSkills, composerTrigger.query).map((skill) => ({
