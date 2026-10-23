@@ -26,10 +26,11 @@ import { memo, useLayoutEffect, useRef } from "react";
 import { type ComposerSlashCommand, type ComposerTriggerKind } from "../../composer-logic";
 import { cn } from "~/lib/utils";
 import { Badge } from "../ui/badge";
-import { Command, CommandGroup, CommandItem, CommandList } from "../ui/command";
+import { Command, CommandGroup, CommandGroupLabel, CommandItem, CommandList } from "../ui/command";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { ComposerBanner } from "./ComposerBanner";
 import { resolvePullRequestState } from "../pullRequest/pullRequestPresentation";
+import { formatProviderDriverKindLabel } from "../../providerModels";
 
 export type ComposerCommandItem =
   | {
@@ -79,6 +80,50 @@ export type ComposerCommandItem =
       description: string;
     };
 
+export type ComposerCommandGroup = {
+  readonly key: string;
+  readonly label: string | null;
+  readonly items: ComposerCommandItem[];
+};
+
+/**
+ * The slash menu mixes built-in, provider and skill entries; grouping keeps each kind together and
+ * leaves the order inside a group as ranked. Other menus stay one flat group.
+ */
+export function groupComposerCommandItems(
+  items: ReadonlyArray<ComposerCommandItem>,
+): ComposerCommandGroup[] {
+  const builtIn: ComposerCommandItem[] = [];
+  const provider: ComposerCommandItem[] = [];
+  const skills: ComposerCommandItem[] = [];
+  for (const item of items) {
+    if (item.type === "slash-command") builtIn.push(item);
+    else if (item.type === "provider-slash-command") provider.push(item);
+    else if (item.type === "skill") skills.push(item);
+    else return [{ key: "all", label: null, items: [...items] }];
+  }
+  const providerItem = provider[0];
+  return [
+    { key: "t3", label: "T3 Code", items: builtIn },
+    {
+      key: "provider",
+      label:
+        providerItem?.type === "provider-slash-command"
+          ? `${formatProviderDriverKindLabel(providerItem.provider)} commands`
+          : null,
+      items: provider,
+    },
+    { key: "skills", label: "Skills", items: skills },
+  ].filter((group) => group.items.length > 0);
+}
+
+/** Arrow keys walk this order, so it must match what the groups render top to bottom. */
+export function orderComposerCommandItemsByGroup(
+  items: ReadonlyArray<ComposerCommandItem>,
+): ComposerCommandItem[] {
+  return groupComposerCommandItems(items).flatMap((group) => group.items);
+}
+
 export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
   listId: string;
   items: ComposerCommandItem[];
@@ -86,6 +131,7 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
   isLoading: boolean;
   triggerKind: ComposerTriggerKind | null;
   emptyStateText?: string;
+  providerUnavailableLabel?: string | null;
   activeItemId: string | null;
   onHighlightedItemChange: (itemId: string | null) => void;
   onSelect: (item: ComposerCommandItem) => void;
@@ -121,20 +167,25 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
             aria-label={props.triggerKind ? LISTBOX_LABEL_BY_TRIGGER[props.triggerKind] : undefined}
             className="max-h-72 min-h-0 scroll-pb-6"
           >
-            <CommandGroup>
-              {props.items.map((item) => (
-                <ComposerCommandMenuItem
-                  key={item.id}
-                  optionId={composerSuggestionOptionId(props.listId, item.id)}
-                  item={item}
-                  triggerKind={props.triggerKind}
-                  resolvedTheme={props.resolvedTheme}
-                  isActive={props.activeItemId === item.id}
-                  onHighlight={props.onHighlightedItemChange}
-                  onSelect={props.onSelect}
-                />
-              ))}
-            </CommandGroup>
+            {groupComposerCommandItems(props.items).map((group) => (
+              <CommandGroup key={group.key}>
+                {group.label && props.triggerKind === "slash-command" ? (
+                  <CommandGroupLabel>{group.label}</CommandGroupLabel>
+                ) : null}
+                {group.items.map((item) => (
+                  <ComposerCommandMenuItem
+                    key={item.id}
+                    optionId={composerSuggestionOptionId(props.listId, item.id)}
+                    item={item}
+                    triggerKind={props.triggerKind}
+                    resolvedTheme={props.resolvedTheme}
+                    isActive={props.activeItemId === item.id}
+                    onHighlight={props.onHighlightedItemChange}
+                    onSelect={props.onSelect}
+                  />
+                ))}
+              </CommandGroup>
+            ))}
           </CommandList>
         ) : (
           <div className="px-5 pt-3.5 pb-7">
@@ -154,6 +205,11 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
             </p>
           </div>
         )}
+        {props.triggerKind === "slash-command" && props.providerUnavailableLabel ? (
+          <p className="px-5 pb-3 text-secondary-label text-xs">
+            Provider commands unavailable: {props.providerUnavailableLabel} isn't running
+          </p>
+        ) : null}
       </ComposerBanner.Surface>
     </Command>
   );

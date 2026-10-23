@@ -4,7 +4,7 @@ import { InfoIcon, XIcon } from "lucide-react";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button, InlineButton } from "../ui/button";
 import { formatProviderDriverKindLabel } from "../../providerModels";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { ExpandableText } from "../settings/ExpandableText";
 
 function getIncompatibleVersion(status: ServerProvider) {
   const compatibility = status.compatibilityAdvisory;
@@ -86,6 +86,25 @@ export function getProviderStatusMessage(status: ServerProvider): string {
       : `${providerName} provider has limited availability.`;
 }
 
+export function getProviderStatusBannerTitle(status: ServerProvider): string {
+  const providerName = status.displayName?.trim() || formatProviderDriverKindLabel(status.driver);
+  const incompatible = getIncompatibleVersion(status);
+  if (!status.installed) return `${providerName} CLI not found`;
+  if (status.status === "error" && status.auth.status === "unauthenticated") {
+    return `${providerName} is unauthenticated`;
+  }
+  if (incompatible) {
+    return `${providerName} ${status.version ?? ""} is ${incompatible.status === "broken" ? "known to be broken" : "unsupported"}`;
+  }
+  return status.status === "error"
+    ? `${providerName} is unavailable`
+    : `${providerName} has limited availability`;
+}
+
+export function getProviderStatusBannerActionLabel(status: ServerProvider): string {
+  return hasProviderSetup(status) ? "Open provider setup" : "Open provider settings";
+}
+
 export const ProviderStatusBanner = memo(function ProviderStatusBanner({
   onDismiss,
   onOpenProviderSetup,
@@ -100,13 +119,8 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
   }
 
   const providerName = status.displayName?.trim() || formatProviderDriverKindLabel(status.driver);
-  const isUnauthenticated = status.status === "error" && status.auth.status === "unauthenticated";
   const incompatible = getIncompatibleVersion(status);
-  const title = isUnauthenticated
-    ? `${providerName} is unauthenticated`
-    : incompatible
-      ? `${providerName} ${status.version ?? ""} is ${incompatible.status === "broken" ? "known to be broken" : "unsupported"}`
-      : `${providerName} provider status`;
+  const title = getProviderStatusBannerTitle(status);
   const message = incompatible?.message ?? getProviderStatusMessage(status);
   const isWarning =
     incompatible?.status !== "broken" && (status.status === "warning" || incompatible !== null);
@@ -122,15 +136,10 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
         <InfoIcon />
         <AlertTitle>{title}</AlertTitle>
         <AlertDescription>
-          <Tooltip>
-            <TooltipTrigger render={<div className="line-clamp-3" />}>{message}</TooltipTrigger>
-            <TooltipPopup side="top" className="whitespace-pre-wrap">
-              {message}
-            </TooltipPopup>
-          </Tooltip>
-          {onOpenProviderSetup && hasProviderSetup(status) ? (
-            <InlineButton onClick={() => onOpenProviderSetup(status.instanceId)}>
-              Open provider setup
+          <ExpandableText text={message} expandLabel="Show full message" />
+          {onOpenProviderSetup ? (
+            <InlineButton className="mt-1" onClick={() => onOpenProviderSetup(status.instanceId)}>
+              {getProviderStatusBannerActionLabel(status)}
             </InlineButton>
           ) : null}
         </AlertDescription>

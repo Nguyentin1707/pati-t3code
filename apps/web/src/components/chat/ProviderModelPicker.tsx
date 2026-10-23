@@ -5,6 +5,7 @@ import {
   type ProviderDriverKind,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
+import { CircleAlertIcon } from "lucide-react";
 import { memo, useEffect, useState } from "react";
 import { Badge } from "../ui/badge";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -47,6 +48,8 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   terminalOpen?: boolean;
   open?: boolean;
   triggerClassName?: string;
+  /** The active instance cannot start; the picker is still usable but the trigger flags it. */
+  activeInstanceErrored?: boolean;
   triggerLabel?: string;
   triggerAriaLabel?: string;
   onOpenChange?: (open: boolean) => void;
@@ -263,6 +266,13 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             </TooltipTrigger>
             <TooltipPopup side="top">{triggerTooltipContent}</TooltipPopup>
           </Tooltip>
+          {props.activeInstanceErrored ? (
+            <CircleAlertIcon
+              role="img"
+              aria-label="Provider unavailable"
+              className="size-3.5 shrink-0 text-error"
+            />
+          ) : null}
           {selectedModel?.isUnavailable && !selectedEntries && props.triggerLabel === undefined ? (
             <Badge variant="outline" size="sm">
               Unavailable

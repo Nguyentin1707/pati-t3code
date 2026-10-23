@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 import {
+  getProviderStatusBannerActionLabel,
   getProviderStatusBannerKey,
+  getProviderStatusBannerTitle,
   getProviderStatusMessage,
   shouldShowProviderStatusBanner,
 } from "./ProviderStatusBanner";
@@ -108,5 +110,37 @@ describe("compatibility banners", () => {
     expect(getProviderStatusMessage({ ...broken, auth: { status: "unauthenticated" } })).toBe(
       broken.message,
     );
+  });
+});
+
+describe("banner title and action", () => {
+  const { compatibilityAdvisory: _advisory, ...healthy } = provider;
+  const failing: ServerProvider = { ...healthy, status: "error" };
+
+  it("names the state instead of a generic status", () => {
+    expect(getProviderStatusBannerTitle({ ...failing, installed: false })).toBe(
+      "Codex CLI not found",
+    );
+    expect(getProviderStatusBannerTitle({ ...failing, auth: { status: "unauthenticated" } })).toBe(
+      "Codex is unauthenticated",
+    );
+    expect(getProviderStatusBannerTitle(failing)).toBe("Codex is unavailable");
+    expect(getProviderStatusBannerTitle({ ...failing, status: "warning" })).toBe(
+      "Codex has limited availability",
+    );
+    expect(getProviderStatusBannerTitle(provider)).toBe("Codex 1.0.0 is unsupported");
+  });
+
+  it("uses the display name when the instance has one", () => {
+    expect(getProviderStatusBannerTitle({ ...failing, displayName: "Codex Work" })).toBe(
+      "Codex Work is unavailable",
+    );
+  });
+
+  it("offers setup only when the provider has a setup flow", () => {
+    expect(getProviderStatusBannerActionLabel(failing)).toBe("Open provider settings");
+    expect(
+      getProviderStatusBannerActionLabel({ ...failing, setup: { canInstall: true } as never }),
+    ).toBe("Open provider setup");
   });
 });
