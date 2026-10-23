@@ -20,6 +20,7 @@ import {
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
   searchSidebarThreads,
+  isThreadNeedingAttention,
   shouldRecedeSidebarThread,
   sortInboxThreadsByReturn,
   resolveSidebarDropTarget,
@@ -321,6 +322,39 @@ describe("resolveSidebarThreadStatus", () => {
   });
 });
 
+describe("isThreadNeedingAttention", () => {
+  it.each([
+    ["approval", true],
+    ["input", true],
+    ["failed", true],
+    ["limited", true],
+    ["working", false],
+    ["waiting", false],
+    ["ready", false],
+  ] as const)("%s -> %s", (status, expected) => {
+    expect(isThreadNeedingAttention(status)).toBe(expected);
+  });
+});
+
+describe("shouldRecedeSidebarThread", () => {
+  it.each([
+    { isUnread: false, isWoke: false },
+    { isUnread: true, isWoke: false },
+  ])("never recedes approval or input (unread=$isUnread)", ({ isUnread, isWoke }) => {
+    for (const status of ["approval", "input"] as const) {
+      expect(
+        shouldRecedeSidebarThread({
+          status,
+          isUnread,
+          isWoke,
+          isActive: false,
+          isSelected: false,
+        }),
+      ).toBe(false);
+    }
+  });
+});
+
 describe("searchSidebarThreads", () => {
   const searchThread = (id: string, title: string, project: string) => ({
     environmentId: localEnvironmentId,
@@ -420,7 +454,7 @@ describe("resolveThreadStatusPill", () => {
     const blocked = { ...baseThread, blockedOnThreadWait: true };
     expect(resolveSidebarThreadStatus(blocked)).toBe("waiting");
     expect(resolveThreadStatusPill({ thread: blocked })).toMatchObject({
-      label: "Waiting",
+      label: "Background",
       pulse: false,
     });
 
@@ -432,7 +466,23 @@ describe("resolveThreadStatusPill", () => {
     });
   });
 
-  it("shows waiting for an idle thread with pending background tasks", () => {
+  it("gives approval and input the same attention hue", () => {
+    const attention = { colorClass: "text-warning-foreground", dotClass: "bg-warning" };
+    expect(
+      resolveThreadStatusPill({ thread: { ...baseThread, hasPendingApprovals: true } }),
+    ).toMatchObject({
+      label: "Pending Approval",
+      ...attention,
+    });
+    expect(
+      resolveThreadStatusPill({ thread: { ...baseThread, hasPendingUserInput: true } }),
+    ).toMatchObject({
+      label: "Awaiting Input",
+      ...attention,
+    });
+  });
+
+  it("shows background for an idle thread with pending background tasks", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
@@ -446,7 +496,7 @@ describe("resolveThreadStatusPill", () => {
         },
       }),
     ).toMatchObject({
-      label: "Waiting",
+      label: "Background",
       colorClass: "text-sidebar-muted-foreground",
       dotClass: "bg-sidebar-muted-foreground",
       pulse: false,
@@ -555,7 +605,7 @@ describe("resolveThreadStatusPill", () => {
 describe("resolveProjectStatusIndicator", () => {
   it("ranks waiting below active work and above plan-ready", () => {
     const waiting = {
-      label: "Waiting" as const,
+      label: "Background" as const,
       colorClass: "text-sidebar-muted-foreground",
       dotClass: "bg-sidebar-muted-foreground",
       pulse: false,
@@ -582,7 +632,7 @@ describe("resolveProjectStatusIndicator", () => {
         },
         waiting,
       ]),
-    ).toMatchObject({ label: "Waiting" });
+    ).toMatchObject({ label: "Background" });
   });
 });
 
@@ -953,7 +1003,7 @@ describe("navigation after parking a thread", () => {
 describe("unseen completion with background work", () => {
   it.each([
     { kind: "command", status: "ready", topStatus: "done", receded: false, pill: "Completed" },
-    { kind: "monitor", status: "waiting", topStatus: "waiting", receded: true, pill: "Waiting" },
+    { kind: "monitor", status: "waiting", topStatus: "waiting", receded: true, pill: "Background" },
   ] as const)("presents a completed thread with a $kind roster", (expected) => {
     const thread = presentThreadShell(localEnvironmentId, {
       ...makeThreadFixture().source,
