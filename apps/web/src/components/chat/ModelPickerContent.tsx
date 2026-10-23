@@ -188,19 +188,22 @@ function modelJumpLabelsByKey(
 
 function ModelPickerProviderNotices({
   setupEntries,
+  errorEntries,
   updateRequiredNotices,
   onRequestClose,
   onOpenProviderSetup,
 }: {
   setupEntries: ReadonlyArray<ProviderInstanceEntry>;
+  errorEntries: ReadonlyArray<ProviderInstanceEntry>;
   updateRequiredNotices: ReadonlyArray<{ instanceId: ProviderInstanceId; notice: string }>;
   onRequestClose: (() => void) | undefined;
   onOpenProviderSetup: ((instanceId: ProviderInstanceId) => void) | undefined;
 }) {
   const navigate = useNavigate();
+  const noticeCount = setupEntries.length + errorEntries.length;
   return (
     <>
-      {setupEntries.length > 0 ? (
+      {noticeCount > 0 ? (
         <div className="max-h-44 shrink-0 overflow-y-auto border-t border-border/70 p-2">
           {setupEntries.map((entry) => (
             <div key={entry.instanceId} className="px-1 py-1.5 text-xs leading-snug">
@@ -214,7 +217,23 @@ function ModelPickerProviderNotices({
                   onOpenProviderSetup?.(entry.instanceId);
                 }}
               >
-                {setupEntries.length > 1 ? `Set up ${entry.displayName}` : "Open provider setup"}
+                {noticeCount > 1 ? `Set up ${entry.displayName}` : "Open provider setup"}
+              </InlineButton>
+            </div>
+          ))}
+          {errorEntries.map((entry) => (
+            <div key={entry.instanceId} className="px-1 py-1.5 text-xs leading-snug">
+              <p className="line-clamp-3 text-muted-foreground">
+                {getProviderStatusMessage(entry.snapshot)}
+              </p>
+              <InlineButton
+                className="mt-1"
+                onClick={() => {
+                  onRequestClose?.();
+                  void navigate({ to: "/settings/providers" });
+                }}
+              >
+                {noticeCount > 1 ? `${entry.displayName} settings` : "Open provider settings"}
               </InlineButton>
             </div>
           ))}
@@ -702,6 +721,20 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         )
       : [];
 
+  // An errored provider has no models to list; say why and where to fix it rather than "No models found".
+  const errorEntries = isSearching
+    ? []
+    : instanceEntries.filter(
+        (entry) =>
+          entry.enabled &&
+          entry.status === "error" &&
+          matchesLockedProvider(entry) &&
+          !providerSetupEntries.includes(entry) &&
+          (selectedEntry
+            ? entry.instanceId === selectedEntry.instanceId
+            : filteredModels.length === 0),
+      );
+
   const updateRequiredNotices = instanceEntries.flatMap((entry) => {
     const shown = isSearching
       ? matchesLockedProvider(entry)
@@ -998,6 +1031,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             />
             <ModelPickerProviderNotices
               setupEntries={providerSetupEntries}
+              errorEntries={errorEntries}
               updateRequiredNotices={updateRequiredNotices}
               onRequestClose={onRequestClose}
               onOpenProviderSetup={onOpenProviderSetup}

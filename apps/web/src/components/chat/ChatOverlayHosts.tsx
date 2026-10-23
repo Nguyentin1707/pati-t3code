@@ -180,10 +180,14 @@ export function BranchRestoreConfirmHost(props: {
   );
 }
 
-interface PendingRevert {
-  readonly turnCount: number;
-  readonly messageId: MessageId;
-}
+type PendingRevert =
+  | { readonly kind: "edit"; readonly turnCount: number; readonly messageId: MessageId }
+  | {
+      readonly kind: "checkpoint";
+      readonly onRollback: () => void;
+      // Null when the provider or run cannot fork; the alternative is then not offered.
+      readonly onFork: (() => void) | null;
+    };
 
 const revertConfirmAtom = makeThreadOverlayAtom<PendingRevert>("revert-confirm");
 
@@ -191,15 +195,21 @@ export function openRevertConfirm(threadKey: string, pending: PendingRevert): vo
   appAtomRegistry.set(revertConfirmAtom, { threadKey, value: pending });
 }
 
+const REWIND_SIDE_EFFECTS_NOTICE = "Commands the agent ran and network calls are not undone.";
+
 export function RevertConfirmHost(props: {
   readonly threadKey: string;
   readonly onConfirm: (turnCount: number, messageId: MessageId, restoreFiles: boolean) => void;
 }) {
   const pending = useThreadOverlay(revertConfirmAtom, props.threadKey);
   const confirm = (restoreFiles: boolean) => {
-    if (pending === null) return;
+    if (pending?.kind !== "edit") return;
     closeThreadOverlay(revertConfirmAtom);
     props.onConfirm(pending.turnCount, pending.messageId, restoreFiles);
+  };
+  const act = (run: () => void) => {
+    closeThreadOverlay(revertConfirmAtom);
+    run();
   };
   return (
     <AlertDialog
@@ -209,20 +219,46 @@ export function RevertConfirmHost(props: {
       }}
     >
       <AlertDialogPopup>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Edit from here?</AlertDialogTitle>
-          <AlertDialogDescription>
-            Rewind chat to before this message. Your prompt and attachments return to the composer.
-            “Revert files too” also undoes your own edits.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-          <Button variant="destructive-outline" onClick={() => confirm(true)}>
-            Revert files too
-          </Button>
-          <Button onClick={() => confirm(false)}>Revert and keep changes</Button>
-        </AlertDialogFooter>
+        {pending?.kind === "checkpoint" ? (
+          <>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Roll back to this checkpoint?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This thread and its files return to the state at this checkpoint, and later history
+                is removed. {REWIND_SIDE_EFFECTS_NOTICE}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+              {pending.onFork ? (
+                <Button variant="outline" onClick={() => act(pending.onFork!)}>
+                  Fork from here instead
+                </Button>
+              ) : null}
+              <Button variant="destructive-outline" onClick={() => act(pending.onRollback)}>
+                Roll back
+              </Button>
+            </AlertDialogFooter>
+          </>
+        ) : (
+          <>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Edit from here?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Rewind chat to before this message. Your prompt and attachments return to the
+                composer. “Revert files too” also undoes your own edits.{" "}
+                {REWIND_SIDE_EFFECTS_NOTICE}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+              <Button variant="destructive-outline" onClick={() => confirm(true)}>
+                Revert files too
+              </Button>
+              <Button onClick={() => confirm(false)}>Revert and keep changes</Button>
+            </AlertDialogFooter>
+          </>
+        )}
       </AlertDialogPopup>
     </AlertDialog>
   );

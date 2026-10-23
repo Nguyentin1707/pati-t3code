@@ -63,6 +63,7 @@ import {
 } from "./ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { useThreadRouteRef } from "../hooks/useThreadRouteTarget";
+import { getAttentionCount, subscribeAttentionCount } from "../threadNotifications";
 
 const MACOS_TRAFFIC_LIGHTS_LEFT_INSET = "var(--desktop-window-controls-inset, 90px)";
 
@@ -137,6 +138,16 @@ function SidebarControl() {
   const shortcutLabel = shortcutLabelForCommand(keybindings, "sidebar.toggle", {
     context: { usagePageOpen },
   });
+  const attentionCount = useSyncExternalStore(subscribeAttentionCount, getAttentionCount);
+  const needsYouLabel =
+    !isSidebarVisible && attentionCount > 0
+      ? attentionCount === 1
+        ? "1 thread needs you"
+        : `${attentionCount} threads need you`
+      : null;
+  const triggerLabel = needsYouLabel
+    ? `Toggle main sidebar, ${needsYouLabel}`
+    : "Toggle main sidebar";
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -185,23 +196,33 @@ function SidebarControl() {
       )}
       data-sidebar-control=""
     >
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <SidebarTrigger
-              variant={isSidebarVisible && stageBackdropVariant ? "media-navigation" : "ghost"}
-              className={cn(
-                "pointer-events-auto",
-                isSidebarVisible && stageBackdropVariant && "relative top-auto translate-y-0",
-              )}
-              aria-label="Toggle main sidebar"
-            />
-          }
-        />
-        <TooltipPopup side="bottom">
-          Toggle main sidebar{shortcutLabel ? ` (${shortcutLabel})` : ""}
-        </TooltipPopup>
-      </Tooltip>
+      <span className="relative flex">
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <SidebarTrigger
+                variant={isSidebarVisible && stageBackdropVariant ? "media-navigation" : "ghost"}
+                className={cn(
+                  "pointer-events-auto",
+                  isSidebarVisible && stageBackdropVariant && "relative top-auto translate-y-0",
+                )}
+                aria-label={triggerLabel}
+              />
+            }
+          />
+          <TooltipPopup side="bottom">
+            {triggerLabel}
+            {shortcutLabel ? ` (${shortcutLabel})` : ""}
+          </TooltipPopup>
+        </Tooltip>
+        {needsYouLabel ? (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute right-1 top-1 size-1.5 rounded-full bg-warning"
+            data-sidebar-attention-dot=""
+          />
+        ) : null}
+      </span>
     </div>
   );
 }

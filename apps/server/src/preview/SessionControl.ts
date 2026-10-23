@@ -2,12 +2,15 @@ import type { PreviewAutomationControlReason } from "@t3tools/contracts";
 
 export class BrowserControlInterrupted extends Error {
   readonly reason: PreviewAutomationControlReason;
+  readonly ownedTabIds: ReadonlyArray<string> | undefined;
   constructor(
     message = "Browser control changed. Refresh the snapshot before trying again.",
     reason: PreviewAutomationControlReason = "interrupted",
+    ownedTabIds?: ReadonlyArray<string>,
   ) {
     super(message);
     this.reason = reason;
+    this.ownedTabIds = ownedTabIds;
   }
 }
 

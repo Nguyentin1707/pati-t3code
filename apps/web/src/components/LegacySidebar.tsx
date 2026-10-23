@@ -202,6 +202,7 @@ import {
   ThreadStatusPill,
 } from "./Sidebar.logic";
 import { sortThreads } from "../lib/threadSort";
+import { isAttentionThread, resolveNextAttentionThreadKey } from "./sidebar/attentionNavigation";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useIsMobile } from "~/hooks/useMediaQuery";
@@ -3436,6 +3437,29 @@ export default function LegacySidebar() {
         return;
       }
 
+      event.preventDefault();
+      event.stopPropagation();
+      navigateToThread(scopeThreadRef(targetThread.environmentId, targetThread.id));
+      return;
+    }
+
+    if (command === "thread.nextAttention") {
+      const attentionThreadKeys = new Set(
+        orderedSidebarThreadKeys.filter((key) => {
+          const thread = sidebarThreadByKey.get(key);
+          return thread !== undefined && isAttentionThread(thread);
+        }),
+      );
+      const targetThread = sidebarThreadByKey.get(
+        resolveNextAttentionThreadKey({
+          orderedThreadKeys: orderedSidebarThreadKeys,
+          attentionThreadKeys,
+          currentThreadKey: routeThreadKey,
+        }) ?? "",
+      );
+      if (!targetThread) {
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       navigateToThread(scopeThreadRef(targetThread.environmentId, targetThread.id));

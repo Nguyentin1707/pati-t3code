@@ -10,8 +10,9 @@ import {
   MIN_PROMPT_FONT_SIZE,
 } from "@t3tools/contracts";
 
+// Manrope is the PATI OS typeface, bundled so offline and remote clients render it alike.
 export const DEFAULT_SANS_FONT_STACK =
-  '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
+  '"Manrope Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
 
 // Concrete names first: some engines alias `ui-monospace` to the
 // proportional system UI font, which would break every code surface.

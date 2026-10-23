@@ -79,6 +79,10 @@ import { useOpenPrLink } from "~/lib/openPullRequestLink";
 import { useClientSettings } from "~/hooks/useSettings";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
+import { useAtomValue } from "@effect/atom-react";
+import { primaryServerKeybindingsAtom } from "../../state/server";
+import { shortcutLabelForCommand } from "../../keybindings";
+import { Kbd } from "../ui/kbd";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { type HandoffTimelineRun } from "./V2LifecycleRow";
 import { TimelineSystemDivider } from "./TimelineSystemDivider";
@@ -86,6 +90,8 @@ import { TimelineSystemDivider } from "./TimelineSystemDivider";
 import { forwardWheelToTimeline } from "./timelineMinimapWheel";
 import { TimelineMinimap } from "./TimelineMinimap";
 import {
+  type AwaitingUserKind,
+  type CheckpointRollbackRequest,
   type TimelineRowSharedState,
   type TimelineRowActivityState,
   TimelineRowCtx,
@@ -192,7 +198,7 @@ interface MessagesTimelineProps {
   onOpenWorktreeSetupTerminal?: (terminalId: string) => void;
   isPreparingWorktree?: boolean;
   isCompacting?: boolean;
-  awaitingUser?: boolean;
+  awaitingUser?: AwaitingUserKind | null;
   footer?: ReactNode;
 
   listRef: React.RefObject<LegendListRef | null>;
@@ -215,10 +221,7 @@ interface MessagesTimelineProps {
     readonly sourceThreadId: ThreadId;
     readonly runId: RunId;
   }) => Promise<void>;
-  onRollbackCheckpoint: (input: {
-    readonly checkpointId: string;
-    readonly scopeId: string;
-  }) => void;
+  onRollbackCheckpoint: (input: CheckpointRollbackRequest) => void;
   supportsConversationRollback: boolean;
   threadStartCheckpointReady?: boolean;
   availableRevertTurnCounts?: ReadonlySet<number> | undefined;
@@ -299,7 +302,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   onOpenWorktreeSetupTerminal,
   isPreparingWorktree = false,
   isCompacting = false,
-  awaitingUser = false,
+  awaitingUser = null,
   listRef,
   timelineEntries,
   findExpanded = false,
@@ -1051,9 +1054,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
         className="flex h-full items-center justify-center ps-(--chat-lane-inset-start) pe-(--chat-lane-inset-end)"
         style={{ paddingBottom: emptyPlaceholderInset }}
       >
-        <p className="text-sm text-muted-foreground/30">
-          Send a message to start the conversation.
-        </p>
+        <EmptyThreadHints />
       </div>
     );
   }
@@ -1376,5 +1377,35 @@ function AttemptFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "at
       <span className="text-xs font-medium text-foreground/80">{row.label}</span>
       <span className="text-2xs text-muted-foreground">Cut off by a steer</span>
     </button>
+  );
+}
+
+const EMPTY_THREAD_SHORTCUT_CONTEXT = {
+  context: { terminalFocus: false, terminalOpen: false },
+} as const;
+
+function EmptyThreadHints() {
+  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const newThreadShortcut =
+    shortcutLabelForCommand(keybindings, "chat.newLocal", EMPTY_THREAD_SHORTCUT_CONTEXT) ??
+    shortcutLabelForCommand(keybindings, "chat.new", EMPTY_THREAD_SHORTCUT_CONTEXT);
+  return (
+    <p className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+      <span className="inline-flex items-center gap-1.5">
+        <Kbd>/</Kbd> commands
+      </span>
+      <span aria-hidden="true">·</span>
+      <span className="inline-flex items-center gap-1.5">
+        <Kbd>@</Kbd> files
+      </span>
+      {newThreadShortcut ? (
+        <>
+          <span aria-hidden="true">·</span>
+          <span className="inline-flex items-center gap-1.5">
+            <Kbd>{newThreadShortcut}</Kbd> new thread
+          </span>
+        </>
+      ) : null}
+    </p>
   );
 }

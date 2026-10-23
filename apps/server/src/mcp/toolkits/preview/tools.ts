@@ -1,12 +1,14 @@
 import {
   OrchestratorMcpFailure,
   ToolActivityIcon,
+  PreviewAutomationActionPage,
   PreviewAutomationClickInput,
   PreviewAutomationDialogInput,
   PreviewAutomationDragInput,
   PreviewAutomationError,
   PreviewAutomationEvaluateInput,
   PreviewAutomationHoverInput,
+  PreviewAutomationInputResult,
   PreviewAutomationNavigateInput,
   PreviewAutomationOpenInput,
   PreviewAutomationPressInput,
@@ -45,7 +47,18 @@ const PreviewToolFailure = Schema.Union([PreviewAutomationError, OrchestratorMcp
 
 const presentationFields = { toolIcon: Schema.optional(ToolActivityIcon) };
 
-const PreviewActionResult = Schema.Struct(presentationFields).annotate({
+const actionPageField = {
+  page: Schema.optional(PreviewAutomationActionPage).annotate({
+    description:
+      "The tab's state right after the action, not necessarily settled: a navigation the action started may not have committed yet, so url can still be the previous page. dialog and fileChooser appear only while one is open; resolve them with preview_dialog or preview_upload.",
+  }),
+};
+
+const PreviewActionResult = Schema.Struct({
+  ...presentationFields,
+  ...actionPageField,
+  ...PreviewAutomationInputResult.fields,
+}).annotate({
   description: "The preview action completed successfully.",
 });
 
@@ -139,7 +152,7 @@ const PreviewSetAppearanceTool = safeBrowserTool(
 export const PreviewSnapshotTool = safeBrowserTool(
   Tool.make("preview_snapshot", {
     description:
-      "Inspect a page before interacting. Pass tabId to inspect a specific tab, including one the user opened (see preview_status tabs), even while they control it; omit it to use this agent session's current tab, or the tab the user is viewing when you have none. Returns page state, semantic elements, diagnostics, action history, and screenshot dimensions. Server snapshots include an accessibilityTree with refs; pass locator=aria-ref=<ref> to target one exact element, including inside frames. Refresh refs after navigation, another snapshot, or human takeover. The text is capped near 20 KB and lists what it omitted; use preview_evaluate to read more. Set includeImage=true only when you need to see the page; the image stays in tool history. Set save=true to write the PNG to disk and get back only the url and screenshotPath. Embed that path in your reply as ![alt](screenshotPath) so the user sees it. This is the only way to show the user a screenshot; the image in the tool result is not saved anywhere.",
+      "Inspect a page before interacting. Pass tabId to inspect a specific tab, including one the user opened (see preview_status tabs), even while they control it; omit it to use this agent session's current tab, or the tab the user is viewing when you have none. Returns page state, diagnostics, action history, and screenshot dimensions when an image was taken. Server snapshots include an accessibilityTree with refs and no separate page text; pass locator=aria-ref=<ref> to target one exact element, including inside frames. Refresh refs after navigation, another snapshot, or human takeover. Console and network entries cover the current page only and keep errors and failed requests (status 400+, uncaught exceptions) first. The text is capped near 20 KB and lists what it omitted; use preview_evaluate to read more. Set includeImage=true only when you need to see the page; the image stays in tool history. Set save=true to write the PNG to disk and get back only the url and screenshotPath. Embed that path in your reply as ![alt](screenshotPath) so the user sees it. This is the only way to show the user a screenshot; the image in the tool result is not saved anywhere.",
     parameters: Schema.Struct({
       ...PreviewAutomationTabTargetInput.fields,
       includeImage: Schema.optional(
@@ -164,7 +177,7 @@ export const PreviewSnapshotTool = safeBrowserTool(
 const PreviewClickTool = browserTool(
   Tool.make("preview_click", {
     description:
-      "Click exactly one target in the tab selected by tabId, or this agent session's current tab when omitted. Prefer a Playwright locator; selector accepts legacy CSS; x and y must be supplied together. Set button=right for a context menu or clickCount=2 for a double-click; server browser tabs only.",
+      "Click exactly one target in the tab selected by tabId, or this agent session's current tab when omitted. Prefer a Playwright locator; selector accepts legacy CSS; x and y must be supplied together. Set button=right for a context menu or clickCount=2 for a double-click; server browser tabs only. The result's page reports the tab right after the click (a pending dialog or file chooser included), and openedTabs lists tabs the click opened, such as a popup or target=_blank link; pass their tabId to act on them.",
     parameters: PreviewAutomationClickInput,
     success: PreviewActionResult,
     failure: PreviewToolFailure,
@@ -202,6 +215,7 @@ const PreviewSelectTool = browserTool(
     success: Schema.Struct({
       ...PreviewAutomationSelectResult.fields,
       ...presentationFields,
+      ...actionPageField,
     }),
     failure: PreviewToolFailure,
     dependencies,
@@ -222,7 +236,7 @@ const PreviewDragTool = browserTool(
 const PreviewUploadTool = browserTool(
   Tool.make("preview_upload", {
     description:
-      "Give files on the environment to the page in the tab selected by tabId, or this agent session's current tab when omitted. After clicking an upload control, preview_status reports the open fileChooser; call this with absolute paths to answer it, or with an empty list to cancel. Pass a locator for an <input type=file> to set its files without a picker. Server browser tabs only.",
+      "Give files on the environment to the page in the tab selected by tabId, or this agent session's current tab when omitted. After clicking an upload control, preview_status and the action result's page.fileChooser report it; call this with absolute paths to answer it, or with an empty list to cancel. Pass a locator for an <input type=file> to set its files without a picker. Server browser tabs only.",
     parameters: PreviewAutomationUploadInput,
     success: PreviewActionResult,
     failure: PreviewToolFailure,
@@ -233,7 +247,7 @@ const PreviewUploadTool = browserTool(
 const PreviewPressTool = browserTool(
   Tool.make("preview_press", {
     description:
-      "Press one keyboard key in the tab selected by tabId, or this agent session's current tab when omitted. Examples: {key:'Enter'}, {key:'Escape'}, or {key:'a',modifiers:['Meta']}.",
+      "Press one keyboard key in the tab selected by tabId, or this agent session's current tab when omitted. Examples: {key:'Enter'}, {key:'Escape'}, or {key:'a',modifiers:['Meta']}. The result's page and openedTabs report what the key press caused, as for preview_click.",
     parameters: PreviewAutomationPressInput,
     success: PreviewActionResult,
     failure: PreviewToolFailure,
@@ -259,6 +273,7 @@ const PreviewScrollTool = safeBrowserTool(
  */
 export const PreviewEvaluateResult = Schema.Struct({
   ...presentationFields,
+  ...actionPageField,
   value: Schema.Unknown.annotate({
     description: "The JSON-serializable value the expression produced, or null.",
   }),

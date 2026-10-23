@@ -194,6 +194,9 @@ export function ComposerControlsBar(props: {
   const hiddenRestingBlockIds = restingBlockDefs
     .slice(restingBlockDefs.length - restingHiddenBlockCount)
     .map((def) => def.id);
+  const selectedInstanceEntry = providerInstanceEntries.find(
+    (entry) => entry.instanceId === selectedInstanceId,
+  );
   // Its own element, so typing (which rebuilds the controls around it) leaves it cached.
   const composerModelPicker = (
     <ComposerModelPicker
@@ -219,6 +222,9 @@ export function ComposerControlsBar(props: {
       lockedProvider={lockedProvider}
       lockedContinuationGroupKey={lockedContinuationGroupKey}
       instanceEntries={providerInstanceEntries}
+      activeInstanceErrored={
+        selectedInstanceEntry?.enabled === true && selectedInstanceEntry.status === "error"
+      }
       keybindings={keybindings}
       modelOptionsByInstance={modelOptionsByInstance}
       size={composerControlsCollapsed ? "xs" : "sm"}

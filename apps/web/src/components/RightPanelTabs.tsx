@@ -88,6 +88,7 @@ import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { PreviewPanelShell, type PreviewPanelMode } from "./preview/PreviewPanelShell";
 import { FaviconImage } from "./preview/PreviewFaviconIcon";
 import { previewBridge } from "./preview/previewBridge";
+import { DiffStatLabel } from "./chat/DiffStatLabel";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
 import { resolvePullRequestState } from "./pullRequest/pullRequestPresentation";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
@@ -140,6 +141,8 @@ export interface RightPanelTabsProps {
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
+  /** Already-loaded git status totals; the launcher never fetches them itself. */
+  diffStat?: { readonly insertions: number; readonly deletions: number } | null | undefined;
   filesAvailable: boolean;
   pullRequestAvailable: boolean;
   pullRequestsAvailable: boolean;
@@ -318,6 +321,7 @@ function RightPanelEmptyState(props: {
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
+  diffStat: RightPanelTabsProps["diffStat"];
   filesAvailable: boolean;
   pullRequestAvailable: boolean;
   pullRequestsAvailable: boolean;
@@ -445,6 +449,32 @@ function RightPanelEmptyState(props: {
     );
   };
 
+  const diffStat =
+    props.diffStat != null && (props.diffStat.insertions > 0 || props.diffStat.deletions > 0)
+      ? props.diffStat
+      : null;
+
+  const actionBody = (action: SurfaceAction, labelClassName?: string) => (
+    <>
+      {actionIcon(action, "size-4")}
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className={cn("truncate", labelClassName)}>{action.label}</span>
+        {"description" in action ? (
+          <span className="text-muted-foreground text-xs leading-snug">{action.description}</span>
+        ) : null}
+      </span>
+      {action.label === "Diff" && diffStat !== null ? (
+        <DiffStatLabel
+          additions={diffStat.insertions}
+          deletions={diffStat.deletions}
+          layout="inline"
+          className="text-xs"
+        />
+      ) : null}
+      <Kbd>{action.shortcut}</Kbd>
+    </>
+  );
+
   return (
     <div
       ref={focusOnMount}
@@ -476,20 +506,16 @@ function RightPanelEmptyState(props: {
                   type="button"
                   onClick={action.onClick}
                   className={cn(
-                    "flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-(--control-radius) px-2.5 text-left text-sm transition-colors group-hover:bg-accent/60",
+                    "flex min-h-8 w-full cursor-pointer items-center gap-2.5 rounded-(--control-radius) px-2.5 py-1 text-left text-sm transition-colors group-hover:bg-accent/60",
                     isHighlighted(action) && "bg-accent/60",
                   )}
                 >
-                  {actionIcon(action, "size-4")}
-                  <span
-                    className={cn(
-                      "min-w-0 flex-1 truncate",
-                      action.label === "Browser" && props.browserProfiles.length > 1 && "pr-7",
-                    )}
-                  >
-                    {action.label}
-                  </span>
-                  <Kbd>{action.shortcut}</Kbd>
+                  {actionBody(
+                    action,
+                    action.label === "Browser" && props.browserProfiles.length > 1
+                      ? "pr-7"
+                      : undefined,
+                  )}
                 </button>
                 {action.label === "Browser" && props.browserProfiles.length > 1 ? (
                   <Menu>
@@ -526,11 +552,9 @@ function RightPanelEmptyState(props: {
                   <div
                     tabIndex={0}
                     aria-disabled="true"
-                    className="flex h-8 w-full cursor-default items-center gap-2.5 rounded-(--control-radius) px-2.5 text-left text-sm opacity-50"
+                    className="flex min-h-8 w-full cursor-default items-center gap-2.5 rounded-(--control-radius) px-2.5 py-1 text-left text-sm opacity-50"
                   >
-                    {actionIcon(action, "size-4")}
-                    <span className="min-w-0 flex-1 truncate">{action.label}</span>
-                    <Kbd>{action.shortcut}</Kbd>
+                    {actionBody(action)}
                   </div>
                 }
               />
@@ -1460,6 +1484,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
             diffAvailable={props.diffAvailable}
+            diffStat={props.diffStat}
             filesAvailable={props.filesAvailable}
             pullRequestAvailable={props.pullRequestAvailable}
             pullRequestsAvailable={props.pullRequestsAvailable}

@@ -209,7 +209,7 @@ const KEYBINDING_GROUPS = [
     title: "Navigation",
     prefixes: ["sidebar", "rightPanel", "commandPalette", "filePicker", "projectSearch", "editor"],
   },
-  { id: "threads", title: "Threads", prefixes: ["thread", "chat", "pullRequest"] },
+  { id: "threads", title: "Threads", prefixes: ["thread", "chat", "pullRequest", "approval"] },
   { id: "composer", title: "Composer", prefixes: ["composer", "modelPicker"] },
   { id: "terminal", title: "Terminal", prefixes: ["terminal"] },
   { id: "preview", title: "Preview & diff", prefixes: ["preview", "diff"] },
@@ -366,6 +366,9 @@ export function commandLabel(command: KeybindingCommand): string {
   if (command === "composer.sendAndNewThread") return "Composer: Send and Start New Thread";
   if (command === "thread.steerQueuedMessage") return "Queue: Send First Queued Message";
   if (command === "thread.editQueuedMessage") return "Queue: Edit Last Queued Message";
+  if (command === "thread.nextAttention") return "Thread: Next Thread That Needs You";
+  if (command === "approval.accept") return "Approval: Approve Request";
+  if (command === "approval.decline") return "Approval: Decline Request";
   if (command === "thread.copyReference") return "Pull Request: Copy Link or Thread ID";
   const usageMetric = METRIC_OPTIONS.find((option) => option.command === command);
   if (usageMetric) return `Usage: ${usageMetric.label}`;

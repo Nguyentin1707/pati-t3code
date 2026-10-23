@@ -3,6 +3,7 @@ import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
 import { buildProjectThreadStartTurnInput } from "../../lib/projectThreadStartTurn";
 import { useWorktreeSetup } from "./use-worktree-setup";
+import type { SetupAwaiting } from "./worktree-setup-card";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import { AppBar } from "../../components/ui/AppBar";
 import {
@@ -773,6 +774,12 @@ function ThreadRouteContent(
     );
   };
   const setupTurnStartedAt = composer.selectedThreadActivityRun?.startedAt ?? null;
+  const setupAwaiting: SetupAwaiting =
+    requests.activePendingApproval !== null
+      ? "approval"
+      : requests.activePendingUserInput !== null
+        ? "input"
+        : null;
   const { snapshot: worktreeSetupSnapshot, visible: worktreeSetup } = useWorktreeSetup({
     environmentId: selectedThread?.environmentId ?? null,
     threadId: selectedThread?.id ?? null,
@@ -947,12 +954,14 @@ function ThreadRouteContent(
               ? composer.activeWorkStartedAt
               : null
           }
+          setupAwaiting={setupAwaiting}
           worktreeSetup={
             worktreeSetup
               ? {
                   snapshot: worktreeSetup,
                   turnStartedAt: setupTurnStartedAt,
                   working: composer.activeWorkStartedAt !== null,
+                  awaiting: setupAwaiting,
                   turnStarted: setupTurnStartedAt !== null,
                   onCancel: handleCancelWorktreeSetup,
                   onWorkLocally: setupMessage && selectedThreadProject ? handleWorkLocally : null,

@@ -54,11 +54,41 @@ For browser work, first call \`preview_status\`. If no automation-capable previe
 
 \`preview_status\` lists every browser tab in this thread, including tabs the user opened. When the user asks about "this page" or a page they have open, read their tab: pass its \`tabId\` to \`preview_snapshot\` or \`preview_wait_for\`, or omit \`tabId\` when you have no tab of your own. You may act on the user's tab, including \`preview_evaluate\`, only while its owner is \`unclaimed\`; while it is \`human\`, the user is driving, so read it with \`preview_snapshot\` or open your own tab. To use a browser profile (a set of saved logins), pass \`profileId\` from \`preview_status\` profiles to \`preview_open\`.
 
+Interaction results (\`preview_click\`, \`preview_type\`, \`preview_press\`, and the other interaction tools) report \`page\`, the tab's url, title, and loading state right after the action, plus \`dialog\` or \`fileChooser\` while one is pending; \`preview_navigate\` already returns the tab's status. \`preview_click\` and \`preview_press\` also report \`openedTabs\` when they opened new tabs, for example a link with \`target="_blank"\`; pass a returned \`tabId\` to keep working in the new tab. Read these before taking another snapshot. \`page\` is the state right after the action, not necessarily settled, so snapshot again when \`loading\` is true or the page still looks mid-change.
+
+\`preview_wait_for\` waits for a visible element by default. Pass \`state: "hidden"\` to wait for a spinner, overlay, or text such as "Saving…" to go away. When an action fails, the error names the cause and the next step (an element covers the target, the control is disabled, the locator matched several elements). Follow that hint instead of repeating the same call.
+
 Do not switch to global browser skills, Chrome, Node REPL browser automation, standalone Playwright, or agent-browser merely because the preview is initially closed or a first call fails. Inspect a failed preview call and retry with corrected arguments when the error is actionable. Use another browser system when:
 - the T3 preview tools are absent, or \`preview_open\` returns an explicit unsupported/unavailable error;
 - the user asks for another browser, or invokes a skill or documented repository workflow that names one; follow that workflow and report any prerequisite it is missing;
 - preview calls on an open tab have failed twice on the same step (timeouts, \`chrome-error://\` pages, a different client answering). Quote the raw error and switch without asking the user which browser to use.
 `;
+
+const T3_CODE_DEVICE_TOOL_INSTRUCTIONS = `## T3 Code devices
+
+The \`t3-code\` MCP server also exposes \`device_*\` tools for iOS Simulators and Android Emulators on this environment. For mobile verification, call \`device_list\`, then \`device_open\` so the user can watch the device in their Device panel; its result explains how to drive the device. Driving happens through the \`agent-device\` CLI, using the exact launcher path returned by \`device_open\`. Keep the host config and session flags returned by \`device_open\` on every command so concurrent devices stay independent: prefer \`agent-device snapshot -i\` refs over coordinates, and use \`device_screenshot\` when you need to see the screen. Prefer these tools and \`agent-device\` for opening and driving devices. Platform tools such as \`xcrun simctl\` and \`adb\` remain available for anything they do not cover, such as builds, logs, or port forwarding. If \`device_list\` reports a platform as unavailable, say so.`;
+
+export interface T3CodeToolAvailability {
+  readonly browser: boolean;
+  readonly device: boolean;
+}
+
+/**
+ * Describing `preview_*` or `device_*` tools that aren't in the turn's tool list would be worse
+ * than saying nothing: the instructions actively steer the model away from Playwright,
+ * agent-browser, and raw simctl/adb, so leaving them in would talk it out of the only automation
+ * it still has.
+ */
+export function t3ToolInstructions(availability: boolean | T3CodeToolAvailability): string {
+  const tools =
+    typeof availability === "boolean" ? { browser: availability, device: false } : availability;
+  return [
+    tools.browser ? T3_CODE_BROWSER_TOOL_INSTRUCTIONS : "",
+    tools.device ? T3_CODE_DEVICE_TOOL_INSTRUCTIONS : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
 
 const T3_CODE_ACP_DEFAULT_MODE_INSTRUCTIONS = `## T3 Code interaction mode: Default
 
@@ -71,6 +101,7 @@ Investigate with read-only actions and do not edit files or otherwise execute th
 export interface T3AcpInstructionState {
   readonly interactionMode: ProviderInteractionMode;
   readonly hasT3Mcp: boolean;
+  readonly browser: boolean;
 }
 
 /**
@@ -86,7 +117,8 @@ export function t3AcpPromptWithInstructions(input: {
   if (input.prompt.trimStart().startsWith("/")) return input.prompt;
   if (
     input.previousState?.interactionMode === input.state.interactionMode &&
-    input.previousState.hasT3Mcp === input.state.hasT3Mcp
+    input.previousState.hasT3Mcp === input.state.hasT3Mcp &&
+    input.previousState.browser === input.state.browser
   ) {
     return input.prompt;
   }
@@ -95,7 +127,10 @@ export function t3AcpPromptWithInstructions(input: {
       ? T3_CODE_ACP_PLAN_MODE_INSTRUCTIONS
       : T3_CODE_ACP_DEFAULT_MODE_INSTRUCTIONS,
     ...(input.state.hasT3Mcp
-      ? [T3_CODE_BROWSER_TOOL_INSTRUCTIONS.trim(), T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim()]
+      ? [
+          ...(input.state.browser ? [T3_CODE_BROWSER_TOOL_INSTRUCTIONS.trim()] : []),
+          T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim(),
+        ]
       : []),
   ];
   return `<t3_code_instructions>\n${instructions.join("\n\n")}\n</t3_code_instructions>\n\n<user_request>\n${input.prompt}\n</user_request>`;
@@ -104,20 +139,26 @@ export function t3AcpPromptWithInstructions(input: {
 /**
  * Keep the wrapper explicit so it cannot be mistaken for text authored by the user.
  */
-function prependT3OrchestrationInstructions(prompt: string): string {
-  return `<t3_code_orchestration_instructions>${T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim()}</t3_code_orchestration_instructions>\n\n<user_request>\n${prompt}\n</user_request>`;
+function prependT3OrchestrationInstructions(prompt: string, browser: boolean): string {
+  return `<t3_code_orchestration_instructions>${T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim()}${browser ? `\n\n${T3_CODE_BROWSER_TOOL_INSTRUCTIONS.trim()}` : ""}</t3_code_orchestration_instructions>\n\n<user_request>\n${prompt}\n</user_request>`;
 }
 
 export function t3OrchestrationPromptForFirstRun(input: {
   readonly prompt: string;
   readonly runOrdinal: number;
   readonly hasT3Mcp: boolean;
+  readonly browser: boolean;
 }): string {
   return input.runOrdinal === 1 && input.hasT3Mcp
-    ? prependT3OrchestrationInstructions(input.prompt)
+    ? prependT3OrchestrationInstructions(input.prompt, input.browser)
     : input.prompt;
 }
 
-export function t3OrchestrationSystemPrompt(hasT3Mcp: boolean): string | undefined {
-  return hasT3Mcp ? T3_CODE_ORCHESTRATION_INSTRUCTIONS : undefined;
+export function t3OrchestrationSystemPrompt(
+  hasT3Mcp: boolean,
+  browser: boolean,
+): string | undefined {
+  return hasT3Mcp
+    ? `${T3_CODE_ORCHESTRATION_INSTRUCTIONS}${browser ? T3_CODE_BROWSER_TOOL_INSTRUCTIONS : ""}`
+    : undefined;
 }

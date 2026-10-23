@@ -1,3 +1,4 @@
+import { BUILT_IN_THEMES, DEFAULT_THEME_ID, PATI_OS_THEME } from "@t3tools/shared/themePalettes";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import indexHtml from "../index.html?raw";
@@ -9,10 +10,7 @@ import {
   isKnownThemePreference,
   resolveThemeAppearance,
   T3_CHAT_THEME,
-  EMBER_THEME,
   GROVE_THEME,
-  IRIS_THEME,
-  OCEAN_THEME,
   THEME_APPEARANCE_MODE_STORAGE_KEY,
   THEME_FOLLOW_SYSTEM_STORAGE_KEY,
   toCanonicalThemeColor,
@@ -110,7 +108,7 @@ function runtimeResolvedAppearance(
   invalidateCustomThemes();
   try {
     const raw = storage[THEME_STORAGE_KEY] ?? null;
-    const theme = raw !== null && isKnownThemePreference(raw) ? raw : "system";
+    const theme = raw !== null && isKnownThemePreference(raw) ? raw : DEFAULT_THEME_ID;
     const followRaw = storage[THEME_FOLLOW_SYSTEM_STORAGE_KEY] ?? null;
     const appearanceRaw = storage[THEME_APPEARANCE_MODE_STORAGE_KEY] ?? null;
     const appearanceMode =
@@ -120,7 +118,7 @@ function runtimeResolvedAppearance(
           ? "system"
           : followRaw === "false"
             ? null
-            : theme === "system"
+            : theme === "system" || theme === DEFAULT_THEME_ID
               ? "system"
               : null;
     const followSystem = appearanceMode === "system";
@@ -284,7 +282,7 @@ describe("index.html boot script", () => {
   });
 
   it("keeps every built-in boot splash in sync with the real palettes", () => {
-    for (const theme of [T3_CHAT_THEME, GROVE_THEME, OCEAN_THEME, EMBER_THEME, IRIS_THEME]) {
+    for (const theme of BUILT_IN_THEMES) {
       expect(theme.appearance).toBe("light");
       for (const mode of ["light", "dark"] as const) {
         const colors = getThemeColorsForMode(theme, mode);
@@ -327,6 +325,28 @@ describe("index.html boot script", () => {
     expect(light.bootVariables["--boot-background"]).toBe(
       getThemeColorsForMode(T3_CHAT_THEME, "light")!.canvas,
     );
+  });
+
+  it("opens on the PATI OS palette, following the system, until a theme is chosen", () => {
+    for (const storage of [{}, { [THEME_STORAGE_KEY]: "gone-theme" }]) {
+      for (const prefersDark of [false, true]) {
+        const boot = runBootScript({ storage, prefersDark });
+        expect(boot.themeId).toBe(PATI_OS_THEME.id);
+        expect(boot.isDark).toBe(prefersDark);
+        expect(boot.bootVariables["--boot-background"]).toBe(
+          getThemeColorsForMode(PATI_OS_THEME, prefersDark ? "dark" : "light")!.canvas,
+        );
+        expect(runtimeResolvedAppearance(storage, prefersDark)).toBe(
+          prefersDark ? "dark" : "light",
+        );
+      }
+    }
+
+    const chosenStandard = runBootScript({
+      storage: { [THEME_STORAGE_KEY]: "system" },
+      prefersDark: false,
+    });
+    expect(chosenStandard.themeId).toBeUndefined();
   });
 
   it("paints the half's splash when the base theme no longer exists", () => {

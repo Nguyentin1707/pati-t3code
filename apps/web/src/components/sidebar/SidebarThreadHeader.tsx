@@ -1,5 +1,6 @@
 import { FolderPlusIcon, SearchIcon, SquarePenIcon, XIcon } from "lucide-react";
 import {
+  useEffect,
   type ComponentProps,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
@@ -9,7 +10,8 @@ import {
 
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
-import { SidebarInput, SidebarMenuButton } from "../ui/sidebar";
+import { Kbd } from "../ui/kbd";
+import { SidebarInput, SidebarMenuButton, useSidebar } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 export interface SidebarThreadHeaderProps {
@@ -51,6 +53,45 @@ export function SidebarThreadHeader({
   activeSearchResultIndex,
   onClearSearch,
 }: SidebarThreadHeaderProps) {
+  const { isMobile, open, setOpen, setOpenMobile } = useSidebar();
+
+  useEffect(() => {
+    const focusSearchOnSlash = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.key !== "/" ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey
+      ) {
+        return;
+      }
+      // A terminal's input is a textarea, so this also leaves the terminal alone.
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable ||
+          target.closest(
+            '[role="dialog"], [aria-modal="true"], [data-slot$="popup"], [data-keybinding-capture]',
+          ) !== null)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      if (isMobile) setOpenMobile(true);
+      else if (!open) setOpen(true);
+      requestAnimationFrame(() => {
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      });
+    };
+    window.addEventListener("keydown", focusSearchOnSlash);
+    return () => window.removeEventListener("keydown", focusSearchOnSlash);
+  }, [isMobile, open, searchInputRef, setOpen, setOpenMobile]);
+
   const resultsVisible = isSearching && searchResultCount > 0;
   // Results shrink as the query narrows, so the active index can outrun the
   // list; pointing aria-activedescendant at a removed option strands the
@@ -101,7 +142,9 @@ export function SidebarThreadHeader({
           >
             <XIcon className="size-3" />
           </Button>
-        ) : null}
+        ) : (
+          <Kbd>/</Kbd>
+        )}
       </div>
       <div className="flex shrink-0 items-center">
         {hasProjects ? (

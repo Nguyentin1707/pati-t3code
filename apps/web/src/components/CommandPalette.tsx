@@ -56,6 +56,7 @@ import {
   FolderGit2Icon,
   FolderIcon,
   FolderPlusIcon,
+  KeyboardIcon,
   MessageSquareDashedIcon,
   LinkIcon,
   MessageSquareIcon,
@@ -155,6 +156,7 @@ import {
   browseInputEndPaddingClass,
   buildBrowseGroups,
   buildRootGroups,
+  partitionNeedsYouThreadItems,
   buildLinkedThreadActionItems,
   buildCommandPaletteRows,
   enumerateCommandPaletteItems,
@@ -203,6 +205,7 @@ import {
   remoteProjectSourceIcon,
   sourceControlHostIcon,
 } from "./CommandPaletteAddProject";
+import { isAttentionThread } from "./sidebar/attentionNavigation";
 import { useCommandPaletteThreadItems } from "./CommandPaletteThreadItems";
 import {
   APPEARANCE_OPTIONS,
@@ -897,7 +900,14 @@ function OpenCommandPaletteDialog(props: {
 
   const { threadItems: allThreadItems, isSearchPending: isThreadSearchPending } =
     useCommandPaletteThreadItems({ activeThreadId, threadSearchQuery });
-  const recentThreadItems = allThreadItems.slice(0, RECENT_THREAD_LIMIT);
+  const { needsYouItems: needsYouThreadItems, recentItems: recentThreadItems } =
+    partitionNeedsYouThreadItems({
+      threadItems: allThreadItems,
+      needsYouThreadIds: new Set(
+        threads.filter((thread) => isAttentionThread(thread)).map((thread) => thread.id),
+      ),
+      recentLimit: RECENT_THREAD_LIMIT,
+    });
 
   // Stable so the item builders that capture it during render never see the
   // highlight ref it writes.
@@ -1306,7 +1316,10 @@ function OpenCommandPaletteDialog(props: {
       searchTerms: ["copy", "pull request", "pr link", "thread id", "reference"],
       title:
         activeThreadReferenceCopyTarget.kind === "pull-request" ? "Copy PR link" : "Copy thread ID",
-      description: activeThreadReferenceCopyTarget.value,
+      // The copied toast shows the thread ID, so the row does not need to.
+      ...(activeThreadReferenceCopyTarget.kind === "pull-request"
+        ? { description: activeThreadReferenceCopyTarget.value }
+        : {}),
       icon: <LinkIcon className={ITEM_ICON_CLASS} />,
       shortcutCommand: "thread.copyReference",
       run: copyActiveThreadReference,
@@ -1551,6 +1564,17 @@ function OpenCommandPaletteDialog(props: {
     },
   });
 
+  actionItems.push({
+    kind: "action",
+    value: "action:keyboard-shortcuts",
+    searchTerms: ["keyboard shortcuts", "keybindings", "hotkeys", "keys", "bindings"],
+    title: "Keyboard shortcuts",
+    icon: <KeyboardIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/settings/keybindings" });
+    },
+  });
+
   const contextualProjectGroup =
     (contextualProjectRef
       ? projectGroupByTargetKey.get(
@@ -1588,7 +1612,7 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
-  const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
+  const rootGroups = buildRootGroups({ actionItems, needsYouThreadItems, recentThreadItems });
   const settingsSearchItems: CommandPaletteActionItem[] = searchSettings(
     deferredQuery,
     availableSettingsSearchItems,

@@ -5,7 +5,16 @@ import {
   type CDPSession,
   type Page,
 } from "playwright-core";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vite-plus/test";
 
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
@@ -30,11 +39,12 @@ describe("server browser element refs", () => {
     await context.close();
   });
 
-  const takeSnapshot = () =>
+  const takeSnapshot = (image = true) =>
     ServerBrowserPage.snapshot({
       page,
       cdp,
       renderScale: 1,
+      image,
       consoleEntries: [],
       networkEntries: [],
       actionTimeline: [],
@@ -72,6 +82,18 @@ describe("server browser element refs", () => {
     ]);
   });
 
+  it("takes no screenshot unless asked", async () => {
+    await page.setContent("<button>go</button>");
+    const send = vi.spyOn(cdp, "send");
+    const text = await takeSnapshot(false);
+    expect(text.screenshot).toBeUndefined();
+    expect(String(text.accessibilityTree)).toContain('button "go"');
+    expect(send).not.toHaveBeenCalledWith("Page.captureScreenshot", expect.anything());
+    const image = await takeSnapshot(true);
+    expect(image.screenshot).toMatchObject({ mimeType: "image/png" });
+    expect(send).toHaveBeenCalledWith("Page.captureScreenshot", expect.anything());
+  });
+
   it("returns from a click once it opens a dialog", async () => {
     await page.setContent(
       `<button onclick="document.body.dataset.answer = String(confirm('sure?'))">Confirm</button>`,
@@ -96,6 +118,113 @@ describe("server browser element refs", () => {
       }),
     ).rejects.toThrow(/strict mode violation/);
     expect(await page.locator("li").count()).toBe(5);
+  });
+
+  it("reports how many elements an ambiguous locator matched", async () => {
+    await page.setContent(repeatedRows);
+    const failure = await ServerBrowserPage.click(page, {
+      selector: 'button[data-testid="delete-row"]',
+      timeoutMs: 1_000,
+    }).catch(ServerBrowserPage.toOperationError);
+    expect(failure).toMatchObject({
+      tag: "PreviewAutomationInvalidSelectorError",
+      detail: { hint: "ambiguous", matchCount: 5 },
+    });
+  });
+
+  it.each([
+    {
+      hint: "covered",
+      html: '<button id="go">Go</button><div style="position:fixed;inset:0;background:#fff"></div>',
+    },
+    { hint: "notEnabled", html: '<button id="go" disabled>Go</button>' },
+    { hint: "notVisible", html: '<button id="go" style="display:none">Go</button>' },
+  ])("hints $hint when a click cannot reach its target", async ({ hint, html }) => {
+    await page.setContent(html);
+    const failure = await ServerBrowserPage.click(page, {
+      selector: "#go",
+      timeoutMs: 300,
+    }).catch(ServerBrowserPage.toOperationError);
+    expect(failure).toMatchObject({
+      tag: "PreviewAutomationTimeoutError",
+      detail: { hint },
+    });
+  });
+
+  it("names the conditions a wait left unmet", async () => {
+    await page.setContent("<p>hello</p>");
+    const failure = await ServerBrowserPage.waitFor(page, {
+      text: "hello",
+      urlIncludes: "never-matches",
+      selector: "#missing",
+      timeoutMs: 150,
+    }).catch(ServerBrowserPage.toOperationError);
+    expect(failure).toMatchObject({
+      tag: "PreviewAutomationTimeoutError",
+      detail: { unmet: ["locator", "url"] },
+    });
+  });
+
+  it("does not treat a hidden element as visible", async () => {
+    await page.setContent('<p id="late" style="display:none">late</p>');
+    const failure = await ServerBrowserPage.waitFor(page, {
+      selector: "#late",
+      timeoutMs: 150,
+    }).catch(ServerBrowserPage.toOperationError);
+    expect(failure).toMatchObject({
+      tag: "PreviewAutomationTimeoutError",
+      detail: { unmet: ["locator"] },
+    });
+  });
+
+  it("waits for a spinner removed by a click to be hidden", async () => {
+    await page.setContent(
+      "<div id=\"spinner\">loading</div><button onclick=\"document.getElementById('spinner').style.display='none'\">done</button>",
+    );
+    const waiting = ServerBrowserPage.waitFor(page, {
+      selector: "#spinner",
+      state: "hidden",
+      timeoutMs: 5_000,
+    });
+    await page.click("button");
+    await waiting;
+  });
+
+  it("waits for text to disappear when the state is hidden", async () => {
+    await page.setContent("<p>Saving…</p>");
+    const waiting = ServerBrowserPage.waitFor(page, {
+      text: "Saving…",
+      state: "hidden",
+      timeoutMs: 5_000,
+    });
+    await page.evaluate("document.querySelector('p').remove()");
+    await waiting;
+  });
+
+  it("names the locator as unmet while an element stays visible", async () => {
+    await page.setContent('<div id="spinner">loading</div>');
+    const failure = await ServerBrowserPage.waitFor(page, {
+      selector: "#spinner",
+      state: "hidden",
+      timeoutMs: 150,
+    }).catch(ServerBrowserPage.toOperationError);
+    expect(failure).toMatchObject({
+      tag: "PreviewAutomationTimeoutError",
+      detail: { unmet: ["locator"] },
+    });
+  });
+
+  it("stops waiting when control of the tab changes hands", async () => {
+    await page.setContent("<p>hello</p>");
+    const control = { generation: 0 };
+    const waiting = ServerBrowserPage.waitFor(
+      page,
+      { selector: "#missing", timeoutMs: 5_000 },
+      undefined,
+      control,
+    );
+    control.generation++;
+    await expect(waiting).rejects.toMatchObject({ reason: "interrupted" });
   });
 
   it("does not retarget a removed ref to a replacement node", async () => {
@@ -229,6 +358,46 @@ describe("server browser element refs", () => {
     await expect(ServerBrowserPage.click(page, { locator })).rejects.toThrow(/stale/);
   });
 
+  describe("when an iframe changes", () => {
+    const framed =
+      '<button onclick="this.textContent=\'clicked\'">parent</button><iframe srcdoc="<button>child</button>"></iframe>';
+    const snapshotFramed = async () => {
+      await page.setContent(framed);
+      await page.frameLocator("iframe").getByRole("button").waitFor();
+      const tree = (await takeSnapshot()).accessibilityTree;
+      return {
+        parent: buttonLocator(tree, "parent"),
+        child: buttonLocator(tree, "child"),
+      };
+    };
+
+    it("keeps main-frame refs after an iframe navigates, and revokes refs into it", async () => {
+      const { parent, child } = await snapshotFramed();
+      const navigated = new Promise((resolve) => page.once("framenavigated", resolve));
+      await page.evaluate(
+        `document.querySelector("iframe").srcdoc = "<button>child</button><p>reloaded</p>"`,
+      );
+      await navigated;
+      await expect(
+        ServerBrowserPage.click(page, { locator: child, timeoutMs: 100 }),
+      ).rejects.toThrow(/stale/);
+      await ServerBrowserPage.click(page, { locator: parent, timeoutMs: 1_000 });
+      expect(await page.getByRole("button", { name: "clicked" }).count()).toBe(1);
+    });
+
+    it("keeps main-frame refs after an iframe is removed", async () => {
+      const { parent, child } = await snapshotFramed();
+      const detached = new Promise((resolve) => page.once("framedetached", resolve));
+      await page.locator("iframe").evaluate((frame) => frame.remove());
+      await detached;
+      await expect(
+        ServerBrowserPage.click(page, { locator: child, timeoutMs: 100 }),
+      ).rejects.toThrow(/stale/);
+      await ServerBrowserPage.click(page, { locator: parent, timeoutMs: 1_000 });
+      expect(await page.getByRole("button", { name: "clicked" }).count()).toBe(1);
+    });
+  });
+
   it.each(["aria-ref=e1", " aria-ref=e1", "css=body >> aria-ref=e1"])(
     "does not allow native refs to bypass generation validation (%s)",
     async (locator) => {
@@ -284,6 +453,90 @@ describe("server browser drag", () => {
       expect(unobserved).toEqual([]);
     } finally {
       process.off("unhandledRejection", onUnhandled);
+    }
+  });
+});
+
+describe("server browser request deadline", () => {
+  const fakeTarget = () => {
+    const locator = {
+      scrollIntoViewIfNeeded: vi.fn(async (_options: { timeout: number }) => {}),
+      boundingBox: vi.fn(async (_options: { timeout: number }) => ({
+        x: 0,
+        y: 0,
+        width: 20,
+        height: 20,
+      })),
+      click: vi.fn(async (_options: { timeout: number }) => {}),
+      hover: vi.fn(async (_options: { timeout: number }) => {}),
+      fill: vi.fn(async (_text: string, _options: { timeout: number }) => {}),
+      evaluate: vi.fn(async (_run: unknown, _arg: unknown, _options: { timeout: number }) => {}),
+    };
+    const page = {
+      locator: () => locator,
+      once: () => {},
+      off: () => {},
+      viewportSize: () => ({ width: 100, height: 100 }),
+    } as unknown as Page;
+    return { page, locator };
+  };
+  const timeoutsOf = (...calls: ReadonlyArray<ReadonlyArray<ReadonlyArray<unknown>>>) =>
+    calls.flat().map((args) => (args.at(-1) as { timeout: number }).timeout);
+
+  it("gives every click step only the time the request has left", async () => {
+    using _now = vi.spyOn(performance, "now").mockReturnValue(10_000);
+    const { page, locator } = fakeTarget();
+    const pointer = vi.fn(async () => {});
+    await ServerBrowserPage.click(page, { locator: "#go" }, pointer, 12_000);
+
+    const timeouts = timeoutsOf(
+      locator.scrollIntoViewIfNeeded.mock.calls,
+      locator.boundingBox.mock.calls,
+      locator.click.mock.calls,
+    );
+    expect(timeouts).toHaveLength(3);
+    for (const timeout of timeouts) {
+      expect(timeout).toBeGreaterThan(0);
+      expect(timeout).toBeLessThan(2_000);
+    }
+    expect(pointer).toHaveBeenCalledOnce();
+  });
+
+  it("skips the cursor animation when too little time is left to play it", async () => {
+    using _now = vi.spyOn(performance, "now").mockReturnValue(10_000);
+    const { page, locator } = fakeTarget();
+    const pointer = vi.fn(async () => {});
+    await ServerBrowserPage.click(page, { locator: "#go" }, pointer, 10_600);
+    await ServerBrowserPage.hover(page, { locator: "#go" }, pointer, 10_600);
+
+    expect(pointer).not.toHaveBeenCalled();
+    expect(locator.click).toHaveBeenCalledOnce();
+    expect(locator.hover).toHaveBeenCalledOnce();
+  });
+
+  it("never hands Playwright a zero timeout, which it reads as no timeout", async () => {
+    using _now = vi.spyOn(performance, "now").mockReturnValue(10_000);
+    const { page, locator } = fakeTarget();
+    await ServerBrowserPage.click(page, { locator: "#go" }, undefined, 9_000);
+
+    for (const timeout of timeoutsOf(
+      locator.scrollIntoViewIfNeeded.mock.calls,
+      locator.boundingBox.mock.calls,
+      locator.click.mock.calls,
+    )) {
+      expect(timeout).toBeGreaterThan(0);
+    }
+  });
+
+  it("bounds typing and scrolling by the same deadline", async () => {
+    using _now = vi.spyOn(performance, "now").mockReturnValue(10_000);
+    const { page, locator } = fakeTarget();
+    await ServerBrowserPage.type(page, { locator: "#name", text: "a", clear: true }, 12_000);
+    await ServerBrowserPage.scroll(page, { locator: "#list", deltaY: 40 }, 12_000);
+
+    for (const timeout of timeoutsOf(locator.fill.mock.calls, locator.evaluate.mock.calls)) {
+      expect(timeout).toBeGreaterThan(0);
+      expect(timeout).toBeLessThan(2_000);
     }
   });
 });

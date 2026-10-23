@@ -3,13 +3,16 @@ import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools
 import type { Thread } from "../types";
 import { makeThreadFixture } from "../test-fixtures";
 import {
+  buildRootGroups,
   buildThreadActionItems,
   buildLinkedThreadActionItems,
   filterPinnedBrowseEntries,
   filterCommandPaletteGroups,
+  partitionNeedsYouThreadItems,
   reduceCommandPaletteUiState,
   createCommandPaletteSearchState,
   reduceCommandPaletteSearchState,
+  type CommandPaletteActionItem,
   type CommandPaletteUiState,
 } from "./CommandPalette.logic";
 
@@ -438,5 +441,103 @@ describe("returning from file and content search", () => {
     expect(closed).toEqual({ open: false, mode: "files", openIntent: null });
     expect(reduceCommandPaletteUiState(closed, { _tag: "BackToCommand" })).toEqual(closed);
     expect(reduceCommandPaletteUiState(closed, { _tag: "SetOpen", open: true })).toEqual(root);
+  });
+});
+
+describe("Needs you palette group", () => {
+  const item = (id: string): CommandPaletteActionItem => ({
+    kind: "action",
+    value: `thread:${id}`,
+    searchTerms: [id],
+    title: id,
+    icon: null,
+    run: async () => {},
+  });
+  const actions = [item("action")];
+
+  it("leads the root list and takes its threads out of Recent Threads", () => {
+    const { needsYouItems, recentItems } = partitionNeedsYouThreadItems({
+      threadItems: ["a", "b", "c", "d"].map(item),
+      needsYouThreadIds: new Set([ThreadId.make("b"), ThreadId.make("d")]),
+      recentLimit: 2,
+    });
+    const groups = buildRootGroups({
+      actionItems: actions,
+      needsYouThreadItems: needsYouItems,
+      recentThreadItems: recentItems,
+    });
+    expect(groups.map((group) => [group.value, group.items.map((entry) => entry.title)])).toEqual([
+      ["needs-you", ["b", "d"]],
+      ["actions", ["action"]],
+      ["recent-threads", ["a", "c"]],
+    ]);
+    expect(groups[0]?.label).toBe("Needs you");
+  });
+
+  it("is omitted when no thread needs you", () => {
+    const { needsYouItems, recentItems } = partitionNeedsYouThreadItems({
+      threadItems: ["a", "b"].map(item),
+      needsYouThreadIds: new Set(),
+      recentLimit: 12,
+    });
+    const groups = buildRootGroups({
+      actionItems: actions,
+      needsYouThreadItems: needsYouItems,
+      recentThreadItems: recentItems,
+    });
+    expect(groups.map((group) => group.value)).toEqual(["actions", "recent-threads"]);
+  });
+
+  it("gives way to search results so a thread is never listed twice", () => {
+    const groups = buildRootGroups({
+      actionItems: actions,
+      needsYouThreadItems: [item("b")],
+      recentThreadItems: [item("a")],
+    });
+    const filtered = filterCommandPaletteGroups({
+      activeGroups: groups,
+      query: "b",
+      isInSubmenu: false,
+      projectSearchItems: [],
+      threadSearchItems: [item("a"), item("b")],
+    });
+    expect(filtered.map((group) => group.value)).toEqual(["threads-search"]);
+  });
+});
+
+describe("unavailable root actions", () => {
+  const action = (value: string, disabled = false): CommandPaletteActionItem => ({
+    kind: "action",
+    value,
+    searchTerms: [value, "linked"],
+    title: value,
+    icon: null,
+    run: async () => {},
+    ...(disabled ? { disabled: true } : {}),
+  });
+  const groups = [
+    {
+      value: "actions",
+      label: "Actions",
+      items: [action("open"), action("linked-pull-requests", true)],
+    },
+  ];
+  const filter = (query: string, isInSubmenu = false) =>
+    filterCommandPaletteGroups({
+      activeGroups: groups,
+      query,
+      isInSubmenu,
+      projectSearchItems: [],
+      threadSearchItems: [],
+    }).flatMap((group) => group.items.map((entry) => entry.value));
+
+  it("stay out of the resting root list but still turn up in search", () => {
+    expect(filter("")).toEqual(["open"]);
+    expect(filter(">")).toEqual(["open"]);
+    expect(filter("linked")).toContain("linked-pull-requests");
+  });
+
+  it("keep showing disabled rows inside a submenu, which explains them", () => {
+    expect(filter("", true)).toEqual(["open", "linked-pull-requests"]);
   });
 });

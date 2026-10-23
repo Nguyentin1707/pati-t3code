@@ -23,7 +23,7 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import type { BrowserContext, Page } from "playwright-core";
-import { beforeEach, expect, vi } from "vite-plus/test";
+import { beforeEach, describe, expect, vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -178,6 +178,8 @@ function makeContext(onClose?: (context: BrowserContext) => void) {
       visibleText: "delete",
       interactiveElements: [],
     })),
+    mouse: { click: vi.fn(async () => {}) },
+    keyboard: { press: vi.fn(async (_key: string) => {}) },
     ariaSnapshot: vi.fn(async () => '- button "delete" [ref=e1]'),
     locator: vi.fn(() => {
       throw new Error("Unexpected locator action");
@@ -494,6 +496,59 @@ it.live("enforces provider ownership and explicit targets when a session has mul
   ).pipe(Effect.provide(layer)),
 );
 
+it.live(
+  "reports tabs a click or key press opened and names the owned tabs when targeting is ambiguous",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, tabId } = yield* ready;
+        const page = contexts[0]!.page;
+        const popup = makeContext().page;
+        let openedUrl = "https://example.com/popup";
+        popup.url = () => openedUrl;
+        page.mouse.click.mockImplementationOnce(async () => {
+          page.emit("popup", popup);
+        });
+        const clicked = yield* broker.invoke<{
+          openedTabs?: ReadonlyArray<{ tabId: string; url: string | null }>;
+        }>({ scope, tabId, operation: "click", input: { x: 10, y: 10 } });
+        expect(clicked.openedTabs).toEqual([{ tabId: expect.any(String), url: openedUrl }]);
+        const popupTabId = clicked.openedTabs![0]!.tabId;
+        expect(popupTabId).not.toBe(tabId);
+
+        const quiet = yield* broker.invoke<unknown>({
+          scope,
+          tabId,
+          operation: "click",
+          input: { x: 10, y: 10 },
+        });
+        expect(quiet).toBeUndefined();
+
+        openedUrl = "https://example.com/second";
+        page.keyboard.press.mockImplementationOnce(async () => {
+          page.emit("popup", makeContext().page);
+        });
+        const pressed = yield* broker.invoke<{ openedTabs?: ReadonlyArray<unknown> }>({
+          scope,
+          tabId,
+          operation: "press",
+          input: { key: "Enter" },
+        });
+        expect(pressed.openedTabs).toHaveLength(1);
+
+        const ambiguous = yield* broker
+          .invoke<void>({ scope, operation: "snapshot", input: {} })
+          .pipe(Effect.flip);
+        expect(ambiguous).toMatchObject({
+          _tag: "PreviewAutomationControlInterruptedError",
+          reason: "tabRequired",
+          ownedTabIds: [tabId, popupTabId, (pressed.openedTabs![0] as { tabId: string }).tabId],
+        });
+        expect(ambiguous.message).toContain(popupTabId);
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
 it.live("streams to a read-only viewer without allowing takeover, input, or viewport changes", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -765,6 +820,97 @@ it.live(
       }),
     ).pipe(Effect.provide(layer)),
 );
+
+describe("snapshot diagnostics", () => {
+  const snapshotOf = (
+    broker: Broker.PreviewAutomationBroker["Service"],
+    tabId: PreviewTabId,
+    input: object = {},
+  ) => broker.invoke<PreviewAutomationSnapshot>({ scope, tabId, operation: "snapshot", input });
+  const asset = (status: number, url: string) => ({
+    status: () => status,
+    url: () => url,
+    request: () => ({ method: () => "GET" }),
+  });
+
+  it.live("an uncaught page exception reaches the console entries as a pageerror", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, tabId } = yield* ready;
+        const error = Object.assign(new TypeError("x is undefined"), {
+          stack: "TypeError: x is undefined\n    at render (app.js:1:1)",
+        });
+        contexts[0]!.page.emit("pageerror", error);
+        const snapshot = yield* snapshotOf(broker, tabId);
+        expect(snapshot.consoleEntries).toEqual([
+          expect.objectContaining({
+            level: "error",
+            source: "pageerror",
+            text: "TypeError: x is undefined\n    at render (app.js:1:1)",
+          }),
+        ]);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
+  it.live("records a failed response but not a successful asset", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, tabId } = yield* ready;
+        const page = contexts[0]!.page;
+        page.emit("response", asset(200, "https://example.com/app.js"));
+        page.emit("response", asset(404, "https://example.com/api/missing"));
+        const snapshot = yield* snapshotOf(broker, tabId);
+        expect(snapshot.networkEntries).toEqual([
+          expect.objectContaining({ url: "https://example.com/api/missing", status: 404 }),
+        ]);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
+  it.live("a main-frame navigation clears the previous document's diagnostics", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, tabId } = yield* ready;
+        const page = contexts[0]!.page;
+        const navigation = (url: string) => ({
+          url: () => url,
+          method: () => "GET",
+          isNavigationRequest: () => true,
+          frame: () => page,
+          failure: () => ({ errorText: "net::ERR_CONNECTION_REFUSED" }),
+        });
+        page.emit("pageerror", new Error("old page"));
+        page.emit("response", asset(500, "https://example.com/old"));
+        page.emit("request", navigation("https://example.com/next"));
+        page.emit("requestfailed", navigation("https://example.com/next"));
+        const snapshot = yield* snapshotOf(broker, tabId);
+        expect(snapshot.consoleEntries).toEqual([]);
+        expect(snapshot.networkEntries).toEqual([
+          expect.objectContaining({ url: "https://example.com/next", failed: true }),
+        ]);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
+  it.live("takes a screenshot only when asked", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, tabId } = yield* ready;
+        const captures = () =>
+          contexts[0]!.sessions
+            .flatMap((session) => session.send.mock.calls.map(([method]) => method))
+            .filter((method) => method === "Page.captureScreenshot").length;
+        const text = yield* snapshotOf(broker, tabId, { image: false });
+        expect(text.screenshot).toBeUndefined();
+        expect(captures()).toBe(0);
+        const image = yield* snapshotOf(broker, tabId, { image: true });
+        expect(image.screenshot).toMatchObject({ mimeType: "image/png", width: 1280 });
+        expect(captures()).toBe(1);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+});
 
 it.live("only the controlling viewer's copy and cut keys reach its clipboard", () =>
   Effect.scoped(
@@ -1067,6 +1213,36 @@ it.live("agents read a human's tab with no arguments and act on it only while no
       expect(retaken).toMatchObject({ reason: "humanControl" });
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.live(
+  "a keyboard action that never settles fails at the deadline and frees the tab's queue",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, tabId } = yield* ready;
+        // Playwright's keyboard has no timeout of its own, so only the request deadline can end this.
+        contexts[0]!.page.keyboard.press.mockImplementationOnce(() => new Promise<void>(() => {}));
+        const failed = yield* broker
+          .invoke<void>({
+            scope,
+            tabId,
+            operation: "press",
+            input: { key: "Enter" },
+            timeoutMs: 50,
+          })
+          .pipe(Effect.flip);
+        expect(failed._tag).toBe("PreviewAutomationTimeoutError");
+        expect(
+          yield* broker.invoke({
+            scope,
+            tabId,
+            operation: "evaluate",
+            input: { expression: "next()" },
+          }),
+        ).toBe("evaluated");
+      }),
+    ).pipe(Effect.provide(layer)),
 );
 
 it.live("a session's own tab stays its default while other sessions' tabs are listed", () =>

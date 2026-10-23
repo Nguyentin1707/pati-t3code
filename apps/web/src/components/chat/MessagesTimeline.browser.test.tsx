@@ -310,6 +310,49 @@ describe("MessagesTimeline automation prompts", () => {
   });
 });
 
+describe("MessagesTimeline working row", () => {
+  const working = {
+    isWorking: true,
+    activeTurnInProgress: true,
+    activeTurnStartedAt: CREATED_AT,
+  } satisfies Partial<TimelineProps>;
+
+  it("shows the turn clock while the agent is working", async () => {
+    setup();
+    await using screen = await renderTimeline([message("Fix it")], working);
+    await expect.element(screen.getByText(/Working for/)).toBeInTheDocument();
+  });
+
+  it("says it is waiting for approval instead of ticking", async () => {
+    setup();
+    await using screen = await renderTimeline([message("Fix it")], {
+      ...working,
+      awaitingUser: "approval",
+    });
+    await expect.element(screen.getByText("Waiting for your approval")).toBeInTheDocument();
+    await expect.element(screen.getByText(/Working for/)).not.toBeInTheDocument();
+  });
+
+  it("says it is waiting for an answer when the agent asked a question", async () => {
+    setup();
+    await using screen = await renderTimeline([message("Fix it")], {
+      ...working,
+      awaitingUser: "input",
+    });
+    await expect.element(screen.getByText("Waiting for your answer")).toBeInTheDocument();
+    await expect.element(screen.getByText(/Working for/)).not.toBeInTheDocument();
+  });
+});
+
+describe("MessagesTimeline empty thread", () => {
+  it("hints at the composer triggers", async () => {
+    setup();
+    await using screen = await renderTimeline([]);
+    await expect.element(screen.getByText(/commands/)).toBeInTheDocument();
+    await expect.element(screen.getByText(/files/)).toBeInTheDocument();
+  });
+});
+
 describe("compact reasoning math", () => {
   it("keeps formulas while flattening compact reasoning previews", () => {
     const tree = parseMarkdownWithMath("## Reasoning\n\nUse **norm** $|x|$ and \\[x^2\\]");

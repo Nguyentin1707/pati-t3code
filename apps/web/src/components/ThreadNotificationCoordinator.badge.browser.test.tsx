@@ -196,7 +196,7 @@ function setup() {
 }
 
 it.each(["hasPendingApprovals", "hasPendingUserInput"] as const)(
-  "badges %s and clears when notifications are disabled",
+  "badges %s and keeps the count when fired notifications are dismissed",
   async (flag) => {
     await using app = setup();
     await app.render();
@@ -211,7 +211,66 @@ it.each(["hasPendingApprovals", "hasPendingUserInput"] as const)(
     });
     state.mode = "sound";
     await app.render();
-    expect(state.badge).toHaveBeenLastCalledWith(0);
+    expect(state.badge).toHaveBeenLastCalledWith(1);
     expect(notification.close).toHaveBeenCalled();
   },
 );
+
+it("counts every thread that needs you across environments and survives window focus", async () => {
+  await using app = setup();
+  await app.render();
+  state.shells.set(
+    "one",
+    shell(
+      { id: "a", hasPendingApprovals: true },
+      { id: "b", hasPendingApprovals: true },
+      { id: "c", hasPendingUserInput: true },
+    ),
+  );
+  state.shells.set("two", shell({ id: "d", hasPendingApprovals: true }));
+  await app.render();
+  expect(state.badge).toHaveBeenLastCalledWith(4);
+
+  focused = true;
+  window.dispatchEvent(new Event("focus"));
+  await app.render();
+  expect(state.badge).toHaveBeenLastCalledWith(4);
+  expect(state.badge).not.toHaveBeenCalledWith(0);
+
+  state.shells.set(
+    "one",
+    shell(
+      { id: "a", hasPendingApprovals: false },
+      { id: "b", hasPendingApprovals: true },
+      { id: "c", hasPendingUserInput: true },
+    ),
+  );
+  await app.render();
+  expect(state.badge).toHaveBeenLastCalledWith(3);
+});
+
+it("sets the badge with notifications off and drops it when the thread resolves", async () => {
+  await using app = setup();
+  state.mode = "off";
+  await app.render();
+  state.shells.set("one", shell({ hasPendingApprovals: true }));
+  await app.render();
+  expect(state.badge).toHaveBeenLastCalledWith(1);
+  expect(TestNotification.sent).toHaveLength(0);
+  expect(state.toast).not.toHaveBeenCalled();
+
+  state.shells.set("one", shell({ hasPendingApprovals: false }));
+  await app.render();
+  expect(state.badge).toHaveBeenLastCalledWith(0);
+});
+
+it("drops an environment's count when that environment goes away", async () => {
+  await using app = setup();
+  await app.render();
+  state.shells.set("two", shell({ hasPendingApprovals: true }));
+  await app.render();
+  expect(state.badge).toHaveBeenLastCalledWith(1);
+  state.environmentIds = ["one"];
+  await app.render();
+  expect(state.badge).toHaveBeenLastCalledWith(0);
+});

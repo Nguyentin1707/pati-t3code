@@ -1,5 +1,6 @@
 import {
   BUILT_IN_THEMES,
+  DEFAULT_THEME_ID,
   T3_CHAT_THEME,
   T3_CODE_LIGHT_THEME_COLORS,
   T3_CODE_DARK_THEME_COLORS,
@@ -37,7 +38,7 @@ export type MobileThemeVariables = Readonly<Record<MobileThemeVariable, string>>
 export function normalizeMobileThemeId(value: unknown): MobileThemeId {
   return typeof value === "string" && (MOBILE_THEME_IDS as readonly string[]).includes(value)
     ? (value as MobileThemeId)
-    : DEFAULT_MOBILE_THEME_ID;
+    : DEFAULT_THEME_ID;
 }
 
 export function normalizeMobileThemeMode(value: unknown): MobileThemeMode {

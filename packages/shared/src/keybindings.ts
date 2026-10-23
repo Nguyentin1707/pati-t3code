@@ -214,6 +214,18 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+shift+s", command: "thread.settle", when: "!terminalFocus" },
   { key: "mod+shift+p", command: "thread.pin", when: "!terminalFocus" },
   { key: "mod+z", command: "thread.undo", when: "!terminalFocus && !editableFocus" },
+  { key: "mod+alt+l", command: "thread.nextAttention", when: "!terminalFocus" },
+  // Decline is mod+alt+shift+n because mod+alt+n already opens a chat without a project.
+  {
+    key: "mod+alt+y",
+    command: "approval.accept",
+    when: "approvalPending && !composerHasText && !terminalFocus",
+  },
+  {
+    key: "mod+alt+shift+n",
+    command: "approval.decline",
+    when: "approvalPending && !composerHasText && !terminalFocus",
+  },
   ...THREAD_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({
     key: `mod+${index + 1}`,
     command,

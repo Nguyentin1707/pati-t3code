@@ -121,6 +121,14 @@ const EDITABLE_AT_POINT_SCRIPT = `(x, y) => {
 }`;
 const UNATTACHED_FILL_VIEWPORT = { width: 1280, height: 800 } as const;
 const NAVIGATION_TIMEOUT_MS = 15_000;
+const WAIT_BACKSTOP_MS = 250;
+const SELF_BOUNDED_OPERATIONS: ReadonlySet<PreviewAutomationRequest["operation"]> = new Set([
+  "navigate",
+  "resize",
+  "setColorScheme",
+  "snapshot",
+  "recordingStart",
+]);
 const VIEWER_NAVIGATION_OPTIONS = { waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS } as const;
 const ACTION_TIMELINE_LIMIT = 50;
 
@@ -296,6 +304,10 @@ interface ServerTab {
   readonly openerTabId: string | undefined;
 
   readonly downloads: Array<ServerDownload>;
+  /** Popups still being turned into tabs, so an action can wait for the ones it caused. */
+  readonly adoptions: Set<Promise<void>>;
+  /** Set only while a click or key press runs; adoptPopup reports the tabs it opens here. */
+  openedTabs: Array<{ readonly tabId: string; readonly url: string }> | null;
   fileChooser: {
     readonly id: string;
     readonly chooser: FileChooser;
@@ -782,6 +794,8 @@ const make = Effect.gen(function* () {
       abortedNavigation: null,
       captureLock: Promise.resolve(),
       capturing: 0,
+      adoptions: new Set(),
+      openedTabs: null,
     };
     if (!desktop) {
       await page.setViewportSize(fixedViewportSize(tab.setting) ?? UNATTACHED_FILL_VIEWPORT);
@@ -793,6 +807,9 @@ const make = Effect.gen(function* () {
     page.on("request", (request) => {
       if (!isMainNavigation(request)) return;
       navigationGenerations.set(request, ++tab.navigationGeneration);
+      // Diagnostics describe the current document; this navigation's own failures arrive after.
+      tab.consoleEntries.length = 0;
+      tab.networkEntries.length = 0;
       clearAbortedNavigation(tab);
       tab.loading = true;
       report(tab, {
@@ -854,12 +871,22 @@ const make = Effect.gen(function* () {
         description,
       });
     });
+    // Successful responses are most of a dev page's traffic and would evict the failures.
     page.on("response", (response) => {
+      if (response.status() < 400) return;
       pushBounded(tab.networkEntries, {
         url: ServerBrowserPage.withoutDataPayload(response.url()),
         method: response.request().method(),
         status: response.status(),
         failed: false,
+        timestamp: new Date().toISOString(),
+      });
+    });
+    page.on("pageerror", (error) => {
+      pushBounded(tab.consoleEntries, {
+        level: "error",
+        text: (error.stack ?? error.message).slice(0, 2_000),
+        source: "pageerror",
         timestamp: new Date().toISOString(),
       });
     });
@@ -877,7 +904,10 @@ const make = Effect.gen(function* () {
     page.on("download", (download) => void saveDownload(tab, download));
     updateFileChooserInterception(tab);
     // Popups become tabs and keep `window.opener`, so sign-in popups can report back.
-    page.on("popup", (popup) => void adoptPopup(tab, popup));
+    page.on("popup", (popup) => {
+      const adoption = adoptPopup(tab, popup).finally(() => tab.adoptions.delete(adoption));
+      tab.adoptions.add(adoption);
+    });
     // Playwright cannot reload a crashed page, so it must leave the tab list.
     const key = tabKey(tab.threadId, tab.tabId);
     if (closedPendingTabs.delete(key)) {
@@ -1068,14 +1098,18 @@ const make = Effect.gen(function* () {
     if (tab.fileChooser === open) closeFileChooser(tab);
     return true;
   };
-  const uploadFiles = async (tab: ServerTab, input: PreviewAutomationUploadInput) => {
+  const uploadFiles = async (
+    tab: ServerTab,
+    input: PreviewAutomationUploadInput,
+    deadlineMs: number,
+  ) => {
     const relative = input.paths.find((path) => !NodePath.isAbsolute(path));
     if (relative !== undefined)
       throw new ServerBrowserPage.ServerBrowserOperationError(
         "PreviewAutomationExecutionError",
         `Upload paths must be absolute: ${relative}`,
       );
-    if (await ServerBrowserPage.setInputFiles(tab.page, input)) return undefined;
+    if (await ServerBrowserPage.setInputFiles(tab.page, input, deadlineMs)) return undefined;
     const open = tab.fileChooser;
     if (!open)
       throw new ServerBrowserPage.ServerBrowserOperationError(
@@ -1089,7 +1123,7 @@ const make = Effect.gen(function* () {
       );
     if (input.paths.length > 0)
       await open.chooser.setFiles([...input.paths], {
-        timeout: input.timeoutMs ?? NAVIGATION_TIMEOUT_MS,
+        timeout: ServerBrowserPage.remaining(deadlineMs),
       });
     if (tab.fileChooser === open) closeFileChooser(tab);
     return undefined;
@@ -1213,6 +1247,7 @@ const make = Effect.gen(function* () {
       }),
     ).then(
       (snapshot) => {
+        opener.openedTabs?.push({ tabId: snapshot.tabId, url: popup.url() });
         if (opener.control.agentId === null)
           controller?.push({ _tag: "popup", tabId: snapshot.tabId });
       },
@@ -1671,16 +1706,35 @@ const make = Effect.gen(function* () {
     );
   };
 
+  const withOpenedTabs = async (tab: ServerTab, run: () => Promise<unknown>) => {
+    const openedTabs: NonNullable<ServerTab["openedTabs"]> = [];
+    tab.openedTabs = openedTabs;
+    try {
+      await run();
+      await Promise.allSettled([...tab.adoptions]);
+    } finally {
+      tab.openedTabs = null;
+    }
+    return openedTabs.length === 0 ? undefined : { openedTabs };
+  };
+
+  const ownedTabIds = (request: PreviewAutomationRequest) =>
+    [...tabs.values()]
+      .filter(
+        (tab) =>
+          tab.threadId === request.threadId && tab.control.agentId === request.agentSessionId,
+      )
+      .map((tab) => tab.tabId);
+
   const requireTab = async (request: PreviewAutomationRequest) => {
     if (!request.agentSessionId)
       throw new BrowserControlInterrupted("The agent session is missing. Reconnect the provider.");
-    const owned = [...tabs.values()].filter(
-      (tab) => tab.threadId === request.threadId && tab.control.agentId === request.agentSessionId,
-    );
+    const owned = ownedTabIds(request);
     if (!request.tabIdExplicit && owned.length > 1)
       throw new BrowserControlInterrupted(
         "Multiple tabs belong to this agent session. Pass a tabId from preview_open or preview_status tabs.",
         "tabRequired",
+        owned,
       );
     const tab =
       request.tabId === undefined
@@ -1734,17 +1788,12 @@ const make = Effect.gen(function* () {
         const open = input as PreviewAutomationOpenInput;
         const url = open.url === undefined ? undefined : normalizePreviewUrl(open.url);
         const reuse = open.reuseExistingTab ?? true;
-        if (
-          reuse &&
-          !request.tabIdExplicit &&
-          [...tabs.values()].filter(
-            (tab) =>
-              tab.threadId === request.threadId && tab.control.agentId === request.agentSessionId,
-          ).length > 1
-        )
+        const owned = ownedTabIds(request);
+        if (reuse && !request.tabIdExplicit && owned.length > 1)
           throw new BrowserControlInterrupted(
             "Multiple tabs are open. Pass tabId or reuseExistingTab=false.",
             "tabRequired",
+            owned,
           );
 
         const found =
@@ -1836,17 +1885,12 @@ const make = Effect.gen(function* () {
         );
       }
       case "recordingStop": {
-        if (
-          !request.tabIdExplicit &&
-          [...tabs.values()].filter(
-            (candidate) =>
-              candidate.threadId === request.threadId &&
-              candidate.control.agentId === request.agentSessionId,
-          ).length > 1
-        )
+        const owned = ownedTabIds(request);
+        if (!request.tabIdExplicit && owned.length > 1)
           throw new BrowserControlInterrupted(
             "Multiple tabs belong to this agent session. Pass a tabId from preview_open or preview_status tabs.",
             "tabRequired",
+            owned,
           );
         const recordings = [...tabs.values()].filter(
           (candidate) =>
@@ -1906,7 +1950,7 @@ const make = Effect.gen(function* () {
             "A browser dialog is pending. Read preview_status.",
             "dialogPending",
           );
-        return executeTabOperation(tab, request);
+        return executeTabOperation(tab, request, deadlineMs);
       });
     }
     return tab.control.agent(
@@ -1921,7 +1965,7 @@ const make = Effect.gen(function* () {
         tab.agentOperating = !READ_OPERATIONS.has(request.operation);
         updateFileChooserInterception(tab);
         try {
-          return await executeTabOperation(tab, request);
+          return await executeTabOperation(tab, request, deadlineMs, tab.control);
         } finally {
           tab.agentOperating = false;
           updateFileChooserInterception(tab);
@@ -1932,7 +1976,35 @@ const make = Effect.gen(function* () {
     );
   };
 
-  const executeTabOperation = async (tab: ServerTab, request: PreviewAutomationRequest) => {
+  const executeTabOperation = (
+    tab: ServerTab,
+    request: PreviewAutomationRequest,
+    deadlineMs: number,
+    interruptedBy?: { readonly generation: number },
+  ) =>
+    // Navigation, snapshots and recordings end on timeouts of their own that say more than a
+    // generic expiry would.
+    SELF_BOUNDED_OPERATIONS.has(request.operation)
+      ? runTabOperation(tab, request, deadlineMs, interruptedBy)
+      : ServerBrowserPage.withDeadline(
+          tab.cdp,
+          {
+            // A wait ends itself with a message naming what it waited for; this is its backstop.
+            deadlineMs:
+              request.operation === "waitFor" ? deadlineMs + WAIT_BACKSTOP_MS : deadlineMs,
+            timeoutMs: request.timeoutMs,
+            label:
+              request.operation === "evaluate" ? "Evaluation" : `The ${request.operation} action`,
+          },
+          () => runTabOperation(tab, request, deadlineMs, interruptedBy),
+        );
+
+  const runTabOperation = async (
+    tab: ServerTab,
+    request: PreviewAutomationRequest,
+    deadlineMs: number,
+    interruptedBy?: { readonly generation: number },
+  ) => {
     const input = request.input;
     switch (request.operation) {
       case "navigate": {
@@ -1968,56 +2040,73 @@ const make = Effect.gen(function* () {
         return { tabId: tab.tabId, colorScheme };
       }
       case "snapshot": {
-        return withScreencastsPaused(tab, () =>
+        const image = (input as { readonly image?: boolean } | undefined)?.image === true;
+        const snapshot = () =>
           ServerBrowserPage.snapshot({
             ...tab,
+            image,
             renderScale: tab.desktop ? "display" : RENDER_SCALE,
-          }),
-        );
+          });
+        // Still serialized with other captures, but viewers and recordings keep streaming.
+        return image ? withScreencastsPaused(tab, snapshot) : withCaptureLock(tab, snapshot);
       }
       case "click": {
         const clickInput = input as PreviewAutomationClickInput;
-        await recordAction(tab, "click", () =>
-          ServerBrowserPage.click(tab.page, clickInput, pointerFor(tab)),
+        return withOpenedTabs(tab, () =>
+          recordAction(tab, "click", () =>
+            ServerBrowserPage.click(tab.page, clickInput, pointerFor(tab), deadlineMs),
+          ),
         );
-        return undefined;
       }
       case "hover":
         return recordAction(tab, "hover", () =>
-          ServerBrowserPage.hover(tab.page, input as PreviewAutomationHoverInput, pointerFor(tab)),
+          ServerBrowserPage.hover(
+            tab.page,
+            input as PreviewAutomationHoverInput,
+            pointerFor(tab),
+            deadlineMs,
+          ),
         );
       case "select":
         return recordAction(tab, "select", () =>
-          ServerBrowserPage.select(tab.page, input as PreviewAutomationSelectInput),
+          ServerBrowserPage.select(tab.page, input as PreviewAutomationSelectInput, deadlineMs),
         );
       case "drag":
         return recordAction(tab, "drag", () =>
-          ServerBrowserPage.drag(tab.page, input as PreviewAutomationDragInput, pointerFor(tab)),
+          ServerBrowserPage.drag(
+            tab.page,
+            input as PreviewAutomationDragInput,
+            pointerFor(tab),
+            deadlineMs,
+          ),
         );
       case "upload":
         return recordAction(tab, "upload", () =>
-          uploadFiles(tab, input as PreviewAutomationUploadInput),
+          uploadFiles(tab, input as PreviewAutomationUploadInput, deadlineMs),
         );
       case "type":
         return recordAction(tab, "type", () =>
-          ServerBrowserPage.type(tab.page, input as PreviewAutomationTypeInput),
+          ServerBrowserPage.type(tab.page, input as PreviewAutomationTypeInput, deadlineMs),
         );
       case "press":
-        return recordAction(tab, "press", () =>
-          ServerBrowserPage.press(tab.page, input as PreviewAutomationPressInput),
+        return withOpenedTabs(tab, () =>
+          recordAction(tab, "press", () =>
+            ServerBrowserPage.press(tab.page, input as PreviewAutomationPressInput),
+          ),
         );
       case "scroll":
         return recordAction(tab, "scroll", () =>
-          ServerBrowserPage.scroll(tab.page, input as PreviewAutomationScrollInput),
+          ServerBrowserPage.scroll(tab.page, input as PreviewAutomationScrollInput, deadlineMs),
         );
       case "evaluate":
-        return ServerBrowserPage.evaluate(
-          tab.cdp,
-          input as PreviewAutomationEvaluateInput,
-          request.timeoutMs,
-        );
+        return ServerBrowserPage.evaluate(tab.cdp, input as PreviewAutomationEvaluateInput);
       case "waitFor":
-        return ServerBrowserPage.waitFor(tab.page, input as PreviewAutomationWaitForInput);
+        return ServerBrowserPage.waitFor(
+          tab.page,
+          input as PreviewAutomationWaitForInput,
+          deadlineMs,
+          interruptedBy,
+        );
       case "recordingStart": {
         const recording = await startRecording(tab);
         return { tabId: tab.tabId, recording: true, startedAt: recording.startedAt };
