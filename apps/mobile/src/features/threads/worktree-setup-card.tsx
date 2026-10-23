@@ -16,11 +16,19 @@ import { WorktreeSetupSheet } from "./worktree-setup-sheet";
 import { ShimmeringWorkContent } from "./thread-work-log";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
 
+/** What a blocked turn is waiting for; a blocked turn is not "working", so its clock must stop. */
+export type SetupAwaiting = "approval" | "input" | null;
+
+function awaitingLabel(awaiting: Exclude<SetupAwaiting, null>) {
+  return awaiting === "approval" ? "Waiting for your approval" : "Waiting for your answer";
+}
+
 export interface WorktreeSetupCardProps {
   snapshot: WorktreeSetupSnapshot;
   turnStarted: boolean;
   turnStartedAt: string | null;
   working: boolean;
+  awaiting?: SetupAwaiting;
   onCancel: () => void;
   onWorkLocally: (() => void) | null;
 }
@@ -40,18 +48,20 @@ const icons: Record<WorktreeSetupStage["status"], AppSymbolName> = {
 };
 
 export function WorktreeSetupCard(props: WorktreeSetupCardProps) {
-  const { snapshot, turnStarted, turnStartedAt, working } = props;
+  const { snapshot, turnStarted, turnStartedAt, working, awaiting = null } = props;
   const handedOff = turnStarted && worktreeSetupAgentStarted(snapshot);
   const running = snapshot.phase === "running";
   const backgroundSetup = handedOff && running;
   const scriptName = snapshot.setupScript?.name ?? "Setup script";
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const now = useVisibleSecondClock(running || working);
+  const now = useVisibleSecondClock(running || (working && awaiting === null));
   const failed =
     snapshot.phase === "failed" || snapshot.stages.some((stage) => stage.status === "failed");
   const label =
     handedOff && working
-      ? `Working for ${elapsed(turnStartedAt, null, now) ?? "0s"}`
+      ? awaiting
+        ? awaitingLabel(awaiting)
+        : `Working for ${elapsed(turnStartedAt, null, now) ?? "0s"}`
       : running
         ? handedOff
           ? "Setup continues…"
@@ -69,7 +79,7 @@ export function WorktreeSetupCard(props: WorktreeSetupCardProps) {
       <View className="min-h-11 flex-row items-center gap-2 border-b border-border px-1">
         <HeaderLabel
           label={label}
-          active={(running || working) && !detailsOpen}
+          active={(running || (working && awaiting === null)) && !detailsOpen}
           failed={failed && !working}
         />
         {!handedOff ? (
@@ -147,12 +157,25 @@ export function WorktreeSetupCard(props: WorktreeSetupCardProps) {
   );
 }
 
-export function WorktreeWorkingHeader({ startedAt }: { startedAt: string }) {
-  const now = useVisibleSecondClock(true);
+export function WorktreeWorkingHeader({
+  startedAt,
+  awaiting = null,
+}: {
+  startedAt: string;
+  awaiting?: SetupAwaiting;
+}) {
+  const now = useVisibleSecondClock(awaiting === null);
   return (
     <View className="py-1">
       <View className="min-h-11 flex-row items-center border-b border-border px-1">
-        <HeaderLabel label={`Working for ${elapsed(startedAt, null, now) ?? "0s"}`} active />
+        <HeaderLabel
+          label={
+            awaiting
+              ? awaitingLabel(awaiting)
+              : `Working for ${elapsed(startedAt, null, now) ?? "0s"}`
+          }
+          active={awaiting === null}
+        />
       </View>
     </View>
   );

@@ -25,6 +25,7 @@ import { useV2ItemSupport } from "../../state/v2ItemSupport";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import { Button } from "../ui/button";
 import ChatMarkdown from "../ChatMarkdown";
+import type { CheckpointRollbackRequest } from "./timelineRowContext";
 import { ChatMarkdownAssetImage } from "./ChatMarkdownMedia";
 import { RenderErrorBoundary } from "../RenderErrorBoundary";
 import { CommandOutputPanel, useCommandOutputStreaming } from "./CommandOutputPanel";
@@ -39,10 +40,7 @@ interface V2ItemInspectorProps {
   readonly workspaceRoot?: string | undefined;
   readonly onOpenThread: (threadId: ThreadId) => void;
   readonly onOpenTurnDiff: (runId: RunId, filePath?: string) => void;
-  readonly onRollbackCheckpoint?: (input: {
-    readonly checkpointId: string;
-    readonly scopeId: string;
-  }) => void;
+  readonly onRollbackCheckpoint?: (input: CheckpointRollbackRequest) => void;
   readonly onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
 }
 
@@ -413,6 +411,10 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
                 props.onRollbackCheckpoint?.({
                   checkpointId: item.checkpointId,
                   scopeId: item.scopeId,
+                  forkFrom:
+                    item.runId === null
+                      ? null
+                      : { sourceThreadId: props.projectedItem.sourceThreadId, runId: item.runId },
                 })
               }
             >

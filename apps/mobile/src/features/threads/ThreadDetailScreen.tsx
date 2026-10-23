@@ -21,7 +21,7 @@ import {
   isThreadWokeUnseen,
   snoozeWakeLabel,
 } from "@t3tools/client-runtime/state/thread-settled";
-import type { WorktreeSetupCardProps } from "./worktree-setup-card";
+import type { SetupAwaiting, WorktreeSetupCardProps } from "./worktree-setup-card";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
@@ -189,6 +189,7 @@ export interface ThreadDetailScreenProps {
   };
   readonly worktreeSetup?: WorktreeSetupCardProps | null;
   readonly setupWorkingStartedAt?: string | null;
+  readonly setupAwaiting?: SetupAwaiting;
   readonly canOperateThread: boolean;
   readonly selectedThread: EnvironmentThreadShell;
   /**
@@ -1362,6 +1363,7 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
               pendingHandoff={props.pendingHandoff}
               worktreeSetup={props.worktreeSetup}
               setupWorkingStartedAt={props.setupWorkingStartedAt}
+              setupAwaiting={props.setupAwaiting}
               queuedMessages={props.queuedMessages}
               dispatchingMessageId={props.dispatchingMessageId}
               // A native subagent has no composer to edit a pending message in;
