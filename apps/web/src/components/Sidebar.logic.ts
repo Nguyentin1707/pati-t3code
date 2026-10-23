@@ -584,7 +584,7 @@ export interface ThreadStatusPill {
     | "Failed"
     | "Pending Approval"
     | "Awaiting Input"
-    | "Waiting"
+    | "Background"
     | "Plan Ready";
   colorClass: string;
   dotClass: string;
@@ -597,7 +597,7 @@ const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   Failed: 3.5,
   Working: 3,
   Connecting: 3,
-  Waiting: 2.5,
+  Background: 2.5,
   "Plan Ready": 2,
   Completed: 1,
 };
@@ -874,12 +874,15 @@ export function shouldRecedeSidebarThread(input: {
   isActive: boolean;
   isSelected: boolean;
 }): boolean {
-  if (input.isActive || input.isSelected || input.status === "input") return false;
+  if (input.isActive || input.isSelected) return false;
   if (input.status === "working" || input.status === "waiting") return true;
-  if (input.status === "ready" || input.status === "approval") {
-    return !input.isUnread && !input.isWoke;
-  }
+  if (input.status === "ready") return !input.isUnread && !input.isWoke;
   return false;
+}
+
+/** The one definition of "needs you" shared by the badge, toasts and sidebar. */
+export function isThreadNeedingAttention(status: SidebarThreadStatus): boolean {
+  return status === "approval" || status === "input" || status === "failed" || status === "limited";
 }
 
 type SidebarThreadStatusInput = Pick<
@@ -1066,8 +1069,8 @@ export function resolveThreadStatusPill(input: {
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
     return {
       label: "Pending Approval",
-      colorClass: "text-amber-600 dark:text-amber-300/90",
-      dotClass: "bg-amber-500 dark:bg-amber-300/90",
+      colorClass: "text-warning-foreground",
+      dotClass: "bg-warning",
       pulse: false,
     };
   }
@@ -1075,8 +1078,8 @@ export function resolveThreadStatusPill(input: {
   if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
     return {
       label: "Awaiting Input",
-      colorClass: "text-indigo-600 dark:text-indigo-300/90",
-      dotClass: "bg-indigo-500 dark:bg-indigo-300/90",
+      colorClass: "text-warning-foreground",
+      dotClass: "bg-warning",
       pulse: false,
     };
   }
@@ -1111,7 +1114,7 @@ export function resolveThreadStatusPill(input: {
     backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
   ) {
     return {
-      label: "Waiting",
+      label: "Background",
       colorClass: "text-sidebar-muted-foreground",
       dotClass: "bg-sidebar-muted-foreground",
       pulse: false,

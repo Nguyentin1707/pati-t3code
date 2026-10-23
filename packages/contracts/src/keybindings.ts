@@ -44,6 +44,7 @@ const THREAD_KEYBINDING_COMMANDS = [
   "thread.settle",
   "thread.pin",
   "thread.undo",
+  "thread.nextAttention",
   ...THREAD_JUMP_KEYBINDING_COMMANDS,
 ] as const;
 export type ThreadKeybindingCommand = (typeof THREAD_KEYBINDING_COMMANDS)[number];
@@ -103,6 +104,8 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "chat.newLocal",
   "chat.newWithoutProject",
   "chat.find",
+  "approval.accept",
+  "approval.decline",
   "editor.openFavorite",
   "usage.cost",
   "usage.tokens",

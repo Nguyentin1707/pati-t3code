@@ -26,49 +26,62 @@ import {
   threadNotificationTag,
   unlockNotificationAudio,
 } from "../threadNotifications";
-import { resolveSidebarThreadStatus } from "./Sidebar.logic";
+import { isThreadNeedingAttention, resolveSidebarThreadStatus } from "./Sidebar.logic";
 import { toastManager } from "./ui/toast";
 
 export function ThreadNotificationCoordinator() {
   const environmentIds = useEnvironmentIds();
   const mode = useClientSettings((settings) => settings.notificationMode);
-  const inAppNotificationsEnabled = useClientSettings(
-    (settings) => settings.inAppNotificationsEnabled,
-  );
   const pending = useRef(
     new Map<string, { environmentId: EnvironmentId; notification: Notification }>(),
   );
+  const attentionCounts = useRef(new Map<EnvironmentId, number>());
+  const shownBadge = useRef(0);
+  const syncBadge = () => {
+    let total = 0;
+    for (const count of attentionCounts.current.values()) total += count;
+    if (total === shownBadge.current) return;
+    shownBadge.current = total;
+    setNotificationBadge(total);
+  };
+  const onAttentionCount = (environmentId: EnvironmentId, count: number) => {
+    if (count > 0) attentionCounts.current.set(environmentId, count);
+    else attentionCounts.current.delete(environmentId);
+    syncBadge();
+  };
   const onNotification = (environmentId: EnvironmentId, notification: Notification) => {
     pending.current.get(notification.tag)?.notification.close();
     pending.current.set(notification.tag, { environmentId, notification });
-    setNotificationBadge(pending.current.size);
   };
 
   useEffect(() => {
     const activeIds = new Set(environmentIds);
-    const count = pending.current.size;
     for (const [tag, entry] of pending.current) {
       if (activeIds.has(entry.environmentId)) continue;
       entry.notification.close();
       pending.current.delete(tag);
     }
-    if (count !== pending.current.size) setNotificationBadge(pending.current.size);
-  }, [environmentIds]);
+    for (const environmentId of attentionCounts.current.keys()) {
+      if (!activeIds.has(environmentId)) attentionCounts.current.delete(environmentId);
+    }
+    syncBadge();
+  }, [environmentIds, syncBadge]);
 
   useEffect(() => {
-    const clear = () => {
+    // Focusing the window only dismisses delivered OS notifications. The badge counts threads
+    // that still need the user, so it follows thread state rather than window focus.
+    const dismiss = () => {
       for (const { notification } of pending.current.values()) notification.close();
       pending.current.clear();
-      setNotificationBadge(0);
     };
-    clear();
+    dismiss();
     if (!hasDesktopNotifications(mode)) return;
-    const unsubscribe = window.desktopBridge?.onNotificationBadgeClear?.(clear);
-    window.addEventListener("focus", clear);
+    const unsubscribe = window.desktopBridge?.onNotificationBadgeClear?.(dismiss);
+    window.addEventListener("focus", dismiss);
     return () => {
       unsubscribe?.();
-      window.removeEventListener("focus", clear);
-      clear();
+      window.removeEventListener("focus", dismiss);
+      dismiss();
     };
   }, [mode]);
 
@@ -82,13 +95,12 @@ export function ThreadNotificationCoordinator() {
     };
   }, [mode]);
 
-  if (mode === "off" && !inAppNotificationsEnabled) return null;
-
   return environmentIds.map((environmentId) => (
     <EnvironmentNotifications
       key={environmentId}
       environmentId={environmentId}
       onNotification={onNotification}
+      onAttentionCount={onAttentionCount}
     />
   ));
 }
@@ -97,15 +109,18 @@ interface NotificationState {
   readonly raw: OrchestrationV2ThreadShell;
   readonly subagentRequest: PendingSubagentRequest | null;
   readonly attention: string | null;
+  readonly countsTowardBadge: boolean;
   readonly completion: number | null;
 }
 
 function EnvironmentNotifications({
   environmentId,
   onNotification,
+  onAttentionCount,
 }: {
   environmentId: EnvironmentId;
   onNotification: (environmentId: EnvironmentId, notification: Notification) => void;
+  onAttentionCount: (environmentId: EnvironmentId, count: number) => void;
 }) {
   const shell = useAtomValue(environmentShell.stateValueAtom(environmentId));
   const threads =
@@ -123,8 +138,11 @@ function EnvironmentNotifications({
   useEffect(() => {
     if (threads === null) {
       previous.current.clear();
+      onAttentionCount(environmentId, 0);
       return;
     }
+    const notificationsEnabled = mode !== "off" || inAppNotificationsEnabled;
+    let attentionCount = 0;
     const next = new Map<ThreadId, NotificationState>();
     const subagentRequests = pendingSubagentRequestsByThread(threads);
     for (const rawThread of threads) {
@@ -138,10 +156,9 @@ function EnvironmentNotifications({
       const thread = presentThreadShell(environmentId, rawThread, subagentRequest);
       let status = resolveSidebarThreadStatus(thread);
       if (status === "ready" && thread.latestRun?.status === "failed") status = "failed";
-      const attention =
-        status === "input" || status === "approval" || status === "failed" || status === "limited"
-          ? `${thread.latestRun?.runId ?? ""}:${status}`
-          : null;
+      const attention = isThreadNeedingAttention(status)
+        ? `${thread.latestRun?.runId ?? ""}:${status}`
+        : null;
       const completedAt = Date.parse(thread.latestRun?.completedAt ?? "");
       const completion =
         status === "ready" &&
@@ -149,7 +166,13 @@ function EnvironmentNotifications({
         Number.isFinite(completedAt)
           ? completedAt
           : (prior?.completion ?? null);
-      next.set(thread.id, { raw: rawThread, subagentRequest, attention, completion });
+      next.set(thread.id, {
+        raw: rawThread,
+        subagentRequest,
+        attention,
+        countsTowardBadge: attention !== null && thread.archivedAt === null,
+        completion,
+      });
       if (!prior || thread.archivedAt !== null) continue;
       const kind =
         attention && attention !== prior.attention
@@ -159,7 +182,7 @@ function EnvironmentNotifications({
               (prior.completion === null || completion > prior.completion)
             ? "completion"
             : null;
-      if (!kind) continue;
+      if (!kind || !notificationsEnabled) continue;
       const title =
         kind === "completion"
           ? "Thread completed"
@@ -239,6 +262,8 @@ function EnvironmentNotifications({
       }
     }
     previous.current = next;
+    for (const entry of next.values()) if (entry.countsTowardBadge) attentionCount += 1;
+    onAttentionCount(environmentId, attentionCount);
   }, [
     activeEnvironmentId,
     activeThreadId,
@@ -246,6 +271,7 @@ function EnvironmentNotifications({
     inAppNotificationsEnabled,
     mode,
     navigate,
+    onAttentionCount,
     onNotification,
     threads,
   ]);

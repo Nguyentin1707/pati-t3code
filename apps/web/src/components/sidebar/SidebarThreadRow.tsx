@@ -657,7 +657,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         }
       : status === "waiting"
         ? {
-            label: "Waiting",
+            label: "Background",
             icon: "waiting" as const,
             className: "text-muted-foreground",
           }
@@ -671,7 +671,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             ? {
                 label: "Input",
                 icon: "input" as const,
-                className: "text-indigo-600 dark:text-indigo-300",
+                className: "text-warning-foreground",
               }
             : status === "limited"
               ? {
@@ -968,7 +968,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 "truncate",
                 shouldRecede
                   ? "text-secondary-label"
-                  : isUnread || isWoke || status === "input"
+                  : isUnread || isWoke || status === "input" || status === "approval"
                     ? "text-foreground"
                     : status === "failed"
                       ? "text-foreground/95"
@@ -978,7 +978,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 "truncate group-focus-within/sidebar-row:text-foreground group-hover/sidebar-row:text-foreground",
                 shouldRecede
                   ? "text-secondary-label/70"
-                  : props.isActive || isWoke || status === "input"
+                  : props.isActive || isWoke || status === "input" || status === "approval"
                     ? "text-foreground"
                     : isUnread
                       ? "text-muted-foreground"

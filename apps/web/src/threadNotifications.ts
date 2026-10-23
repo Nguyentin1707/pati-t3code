@@ -38,7 +38,24 @@ export function threadNotificationTag(environmentId: EnvironmentId, threadId: Th
 let originalFavicon: HTMLLinkElement | undefined;
 let badgeFavicon: HTMLLinkElement | undefined;
 
+let attentionCount = 0;
+const attentionListeners = new Set<() => void>();
+
+/** The same count the app badge shows, for in-window indicators. */
+export function subscribeAttentionCount(listener: () => void) {
+  attentionListeners.add(listener);
+  return () => void attentionListeners.delete(listener);
+}
+
+export function getAttentionCount() {
+  return attentionCount;
+}
+
 export function setNotificationBadge(count: number) {
+  if (count !== attentionCount) {
+    attentionCount = count;
+    for (const listener of attentionListeners) listener();
+  }
   const bridge = window.desktopBridge;
   let image: string | null = null;
   if (count > 0 && (!bridge || bridge.getClientPlatform?.() === "win32")) {

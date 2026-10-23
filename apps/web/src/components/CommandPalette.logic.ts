@@ -497,10 +497,16 @@ export function filterCommandPaletteGroups(input: {
   const normalizedQuery = normalizeSearchText(searchQuery);
 
   if (normalizedQuery.length === 0) {
-    if (isActionsFilter) {
-      return input.activeGroups.filter((group) => group.value === "actions");
-    }
-    return [...input.activeGroups];
+    const restingGroups = input.isInSubmenu
+      ? [...input.activeGroups]
+      : input.activeGroups.flatMap((group) => {
+          // Unavailable root actions only add noise until someone searches for them.
+          const items = group.items.filter((item) => !item.disabled);
+          return items.length > 0 ? [{ ...group, items }] : [];
+        });
+    return isActionsFilter
+      ? restingGroups.filter((group) => group.value === "actions")
+      : restingGroups;
   }
   const queryTokens = normalizedQuery.split(" ");
 
@@ -508,7 +514,10 @@ export function filterCommandPaletteGroups(input: {
   if (isActionsFilter) {
     baseGroups = baseGroups.filter((group) => group.value === "actions");
   } else if (!input.isInSubmenu) {
-    baseGroups = baseGroups.filter((group) => group.value !== "recent-threads");
+    // Both groups repeat threads the Threads search group already lists.
+    baseGroups = baseGroups.filter(
+      (group) => group.value !== "recent-threads" && group.value !== "needs-you",
+    );
   }
 
   const searchableGroups = [...baseGroups];
@@ -640,8 +649,12 @@ export function getCommandPaletteMode(input: {
 export function buildRootGroups(input: {
   actionItems: ReadonlyArray<CommandPaletteActionItem | CommandPaletteSubmenuItem>;
   recentThreadItems: ReadonlyArray<CommandPaletteActionItem>;
+  needsYouThreadItems?: ReadonlyArray<CommandPaletteActionItem>;
 }): CommandPaletteGroup[] {
   const groups: CommandPaletteGroup[] = [];
+  if (input.needsYouThreadItems && input.needsYouThreadItems.length > 0) {
+    groups.push({ value: "needs-you", label: "Needs you", items: input.needsYouThreadItems });
+  }
   if (input.actionItems.length > 0) {
     groups.push({ value: "actions", label: "Actions", items: input.actionItems });
   }
@@ -653,6 +666,29 @@ export function buildRootGroups(input: {
     });
   }
   return groups;
+}
+
+/**
+ * Thread items are listed once at the root, so the threads that need you come
+ * out of Recent Threads instead of repeating there.
+ */
+export function partitionNeedsYouThreadItems(input: {
+  threadItems: ReadonlyArray<CommandPaletteActionItem>;
+  needsYouThreadIds: ReadonlySet<Thread["id"]>;
+  recentLimit: number;
+}): {
+  needsYouItems: CommandPaletteActionItem[];
+  recentItems: CommandPaletteActionItem[];
+} {
+  const needsYouValues = new Set([...input.needsYouThreadIds].map((id) => `thread:${id}`));
+  const needsYouItems: CommandPaletteActionItem[] = [];
+  const recentItems: CommandPaletteActionItem[] = [];
+  for (const item of input.threadItems) {
+    const needsYou = needsYouValues.has(item.value);
+    if (needsYou && needsYouItems.length < input.recentLimit) needsYouItems.push(item);
+    else if (!needsYou && recentItems.length < input.recentLimit) recentItems.push(item);
+  }
+  return { needsYouItems, recentItems };
 }
 
 export function getCommandPaletteInputPlaceholder(mode: CommandPaletteMode): string {
