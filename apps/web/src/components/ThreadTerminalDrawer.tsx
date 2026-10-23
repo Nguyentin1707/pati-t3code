@@ -1137,11 +1137,15 @@ function TerminalSessionViewport({
     };
   }, [layoutRevision]);
   return (
-    <div
-      ref={containerRef}
-      tabIndex={-1}
-      className="relative h-full w-full overflow-hidden bg-(--terminal-background)"
-    />
+    // The inset lives on a wrapper because the surface sizes its grid from the
+    // mount's clientWidth/clientHeight, which include padding.
+    <div className="h-full w-full bg-(--terminal-background) px-2 pt-1">
+      <div
+        ref={containerRef}
+        tabIndex={-1}
+        className="relative h-full w-full overflow-hidden bg-(--terminal-background)"
+      />
+    </div>
   );
 }
 
@@ -1814,7 +1818,7 @@ export default function ThreadTerminalDrawer({
       data-thread-terminal-drawer
       data-terminal-owner={isPanel ? "right-panel" : "drawer"}
       className={cn(
-        "relative flex min-w-0 flex-col overflow-hidden bg-background",
+        "group/terminal relative flex min-w-0 flex-col overflow-hidden bg-background",
         isPanel ? "h-full flex-1" : "z-45 shrink-0 border-t border-border/80",
       )}
       style={isPanel ? undefined : { height: `${drawerHeight}px` }}
@@ -1832,7 +1836,7 @@ export default function ThreadTerminalDrawer({
 
       {!hasTerminalSidebar && (
         <div className="pointer-events-none absolute right-2 top-2 z-20">
-          <div className="pointer-events-auto inline-flex items-center overflow-hidden rounded-md border border-border/80 bg-background shadow-xs">
+          <div className="pointer-events-auto inline-flex items-center overflow-hidden rounded-md border border-border/80 bg-background opacity-0 shadow-xs transition-opacity focus-within:opacity-100 group-hover/terminal:opacity-100 pointer-coarse:opacity-100">
             <TerminalActionButton
               disabled={!canOperateTerminal}
               className={`p-1 text-foreground/90 transition-colors ${
