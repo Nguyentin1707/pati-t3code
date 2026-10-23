@@ -239,6 +239,36 @@ describe("thread undo shortcut", () => {
   });
 });
 
+describe("attention triage shortcuts", () => {
+  const press = (key: string, shiftKey = false) =>
+    event({ key, ctrlKey: true, altKey: true, shiftKey });
+  const resolve = (input: ShortcutEventLike, context: Record<string, boolean> = {}) =>
+    resolveShortcutCommand(input, DEFAULT_RESOLVED_KEYBINDINGS, { platform: "Linux", context });
+
+  it("jumps to the next thread that needs you", () => {
+    assert.strictEqual(resolve(press("l")), "thread.nextAttention");
+    assert.isNull(resolve(press("l"), { terminalFocus: true }));
+  });
+
+  it("answers an approval only while its drawer is up and the composer is empty", () => {
+    const drawer = { approvalPending: true, composerHasText: false };
+    assert.strictEqual(resolve(press("y"), drawer), "approval.accept");
+    assert.strictEqual(resolve(press("n", true), drawer), "approval.decline");
+    assert.isNull(resolve(press("y")));
+    assert.isNull(resolve(press("y"), { ...drawer, composerHasText: true }));
+    assert.isNull(resolve(press("n", true), { ...drawer, composerHasText: true }));
+    assert.isNull(resolve(press("y"), { ...drawer, terminalFocus: true }));
+  });
+
+  it("leaves the existing new-chat-without-project chord alone", () => {
+    assert.strictEqual(resolve(press("n")), "chat.newWithoutProject");
+    assert.strictEqual(
+      resolve(press("n"), { approvalPending: true, composerHasText: false }),
+      "chat.newWithoutProject",
+    );
+  });
+});
+
 describe("split/new/close terminal shortcuts", () => {
   it("supports when expressions", () => {
     const keybindings = compile([

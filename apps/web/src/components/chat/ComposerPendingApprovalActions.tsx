@@ -3,9 +3,13 @@ import {
   type ProviderApprovalOption,
   type RuntimeRequestId,
 } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { memo } from "react";
 import { EllipsisIcon, TriangleAlertIcon } from "lucide-react";
+import { shortcutLabelForCommand } from "../../keybindings";
+import { primaryServerKeybindingsAtom } from "../../state/server";
 import { Button } from "../ui/button";
+import { Kbd } from "../ui/kbd";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { composerFloatingLayerProps } from "./composerEventScope";
@@ -37,6 +41,18 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
   options = DEFAULT_APPROVAL_OPTIONS,
   onRespondToApproval,
 }: ComposerPendingApprovalActionsProps) {
+  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const shortcutLabelFor = (decision: ProviderApprovalDecision) => {
+    const command =
+      decision === "accept"
+        ? "approval.accept"
+        : decision === "decline"
+          ? "approval.decline"
+          : null;
+    return shortcutLabelForCommand(keybindings, command, {
+      context: { approvalPending: true, composerHasText: false, terminalFocus: false },
+    });
+  };
   const primaryOptions = options.filter(
     (option) => option.decision === "decline" || option.decision === "accept",
   );
@@ -47,9 +63,11 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
   return (
     <>
       {primaryOptions.map((option) => {
+        const shortcutLabel = shortcutLabelFor(option.decision);
         const button = (
           <Button
             key={option.decision}
+            data-approval-decision={option.decision}
             size="xs"
             variant={option.decision === "accept" ? "default" : "outline"}
             disabled={disabled || isResponding || !canRespond}
@@ -62,6 +80,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
           >
             {option.warning ? <TriangleAlertIcon className="size-3 shrink-0" /> : null}
             <span className="max-w-40 truncate">{option.label}</span>
+            {shortcutLabel ? <Kbd>{shortcutLabel}</Kbd> : null}
           </Button>
         );
         return option.warning ? (

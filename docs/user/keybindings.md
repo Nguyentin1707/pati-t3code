@@ -110,7 +110,8 @@ Join modifiers and a key with `+`, such as `mod+shift+d` or `ctrl+l`.
 
 Available context keys are `terminalFocus`, `terminalOpen`, `previewFocus`,
 `previewOpen`, `modelPickerOpen`, `usagePageOpen`, `composerFocus`, `composerDraft`,
-`turnRunning`, `editableFocus`, `isWeb`, and `isDesktop`.
+`turnRunning`, `approvalPending`, `composerHasText`, `editableFocus`, `isWeb`, and
+`isDesktop`.
 `editableFocus` is true while a text field, the composer, or another editor has
 the keyboard. `isWeb` is true in a browser tab. `isDesktop` is true in the
 desktop app. Unknown keys evaluate to `false`.
@@ -161,6 +162,21 @@ through the pages you have visited, like a browser's back and forward buttons.
 `chat.newLocal` skips that chooser. Both use your
 [new-thread defaults](./thread-sidebar.md#start-a-thread). `chat.newWithoutProject`
 (`mod+alt+n`) starts a thread [without a project](./thread-sidebar.md#start-without-a-project).
+
+## Answer what needs you
+
+`thread.nextAttention` (`mod+alt+l`) opens the next thread that needs you, in sidebar
+order, and wraps around. A thread needs you when it is waiting on an approval or
+an answer, has failed, or has hit a usage limit. Nothing happens when no other
+thread needs you. The command palette lists the same threads under **Needs you**.
+
+While the approval prompt above the composer is showing, `approval.accept` (`mod+alt+y`)
+presses **Approve** and `approval.decline` (`mod+alt+shift+n`) presses **Decline**. The
+shortcuts are off while the composer has text, so typing a message still declines the
+request and steers the agent. The prompt shows each shortcut on its button.
+
+In the sidebar, press `/` to jump to thread search. It is ignored while you type in a text
+field or terminal. Open **Keyboard shortcuts** from the command palette to reach this page.
 
 ## Reserved shortcuts
 
