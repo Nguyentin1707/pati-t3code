@@ -115,7 +115,7 @@ export function SidebarThreadHeader({
           value={searchQuery}
           onChange={(event) => onSearchQueryChange(event.currentTarget.value)}
           onKeyDown={onSearchKeyDown}
-          placeholder="Search threads"
+          placeholder="Search"
           aria-label="Search threads"
           role="combobox"
           aria-autocomplete="list"
